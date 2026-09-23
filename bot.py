@@ -24,6 +24,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+from telegram.error import InvalidToken
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -39,7 +40,8 @@ import templates as T
 load_dotenv()
 
 # ---------------------------------------------------------------- réglages
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+# Nettoie les erreurs de copier-coller fréquentes : espaces, guillemets, "BOT_TOKEN=" collé dans la valeur
+BOT_TOKEN = re.sub(r"^\s*BOT_TOKEN\s*=\s*", "", os.getenv("BOT_TOKEN", "")).strip().strip("'\"<> ").replace(" ", "")
 _ch = os.getenv("CHANNEL_ID", "").strip()
 CHANNEL_ID = int(_ch) if re.fullmatch(r"-?\d+", _ch or "x") else _ch
 ADMIN_IDS = {int(x) for x in re.split(r"[,\s]+", os.getenv("ADMIN_IDS", "")) if x.strip().isdigit()}
@@ -66,6 +68,19 @@ def db():
 
 
 def init_db():
+    global DB_PATH
+    folder = os.path.dirname(os.path.abspath(DB_PATH))
+    try:
+        os.makedirs(folder, exist_ok=True)
+        sqlite3.connect(DB_PATH).close()
+    except Exception as e:
+        log.warning("⚠️ Impossible d'utiliser %s (%s). Base locale 'signals.db' utilisée à la place : "
+                    "l'historique sera PERDU à chaque redéploiement. Ajoute un volume monté sur %s.",
+                    DB_PATH, e, folder)
+        DB_PATH = "signals.db"
+    if os.getenv("RAILWAY_ENVIRONMENT") and not os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
+        log.warning("⚠️ Aucun volume Railway détecté : l'historique sera perdu à chaque redéploiement.")
+    log.info("Base de données : %s", os.path.abspath(DB_PATH))
     with db() as c:
         c.execute(
             """CREATE TABLE IF NOT EXISTS signals(
@@ -627,7 +642,17 @@ async def job_report(context: ContextTypes.DEFAULT_TYPE):
 # ================================================================ démarrage
 def main():
     if not BOT_TOKEN:
-        raise SystemExit("❌ BOT_TOKEN manquant (voir .env.example)")
+        seen = sorted(k for k in os.environ if "TOKEN" in k.upper() or "BOT" in k.upper())
+        raise SystemExit(
+            "❌ BOT_TOKEN introuvable. Vérifie que la variable s'appelle exactement BOT_TOKEN "
+            f"(majuscules, avec le _) et que les changements Railway sont bien déployés. "
+            f"Variables ressemblantes trouvées : {seen or 'aucune'}")
+    masked = f"{BOT_TOKEN[:4]}…{BOT_TOKEN[-4:]} ({len(BOT_TOKEN)} caractères)"
+    if not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{30,}", BOT_TOKEN):
+        raise SystemExit(
+            f"❌ BOT_TOKEN mal formé : {masked}. Un jeton ressemble à 7412345678:AAH3k… "
+            "(chiffres, deux-points, ~35 caractères). Recopie-le depuis @BotFather sans guillemets ni espaces.")
+    log.info("Jeton chargé : %s", masked)
     if not ADMIN_IDS:
         log.warning("ADMIN_IDS vide : envoie /start au robot pour connaître ton identifiant.")
     init_db()
@@ -675,7 +700,12 @@ def main():
         log.info("Bilans auto : quotidien %s, hebdo le %s", DAILY_REPORT_TIME, WEEKLY_REPORT_DAY)
 
     log.info("🤖 Robot démarré — canal %s, admins %s", CHANNEL_ID, ADMIN_IDS)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+    except InvalidToken:
+        raise SystemExit(
+            f"❌ Telegram refuse ce jeton ({masked}). Il a peut-être été régénéré ou révoqué : "
+            "dans @BotFather → /mybots → ton robot → API Token, recopie le jeton actuel.")
 
 
 if __name__ == "__main__":
