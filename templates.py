@@ -32,6 +32,22 @@ DEFAULT_PIP = 0.0001   # paires Forex classiques (EURUSD, GBPUSD...)
 JPY_PIP = 0.01         # paires en JPY
 
 
+# Libellés des types d'ordre
+ORDER_LABELS = {
+    ("BUY", "MARKET"): "🟢 <b>ACHAT (BUY)</b> au marché",
+    ("SELL", "MARKET"): "🔴 <b>VENTE (SELL)</b> au marché",
+    ("BUY", "LIMIT"): "🟢 <b>BUY LIMIT</b> (ordre en attente)",
+    ("SELL", "LIMIT"): "🔴 <b>SELL LIMIT</b> (ordre en attente)",
+    ("BUY", "STOP"): "🟢 <b>BUY STOP</b> (ordre en attente)",
+    ("SELL", "STOP"): "🔴 <b>SELL STOP</b> (ordre en attente)",
+}
+
+
+def _kind(s: dict) -> str:
+    ot = s.get("order_type") or "MARKET"
+    return s["direction"] if ot == "MARKET" else f"{s['direction']} {ot}"
+
+
 def _sign(p: float) -> str:
     return f"+{p:g}" if p > 0 else f"{p:g}"
 
@@ -42,8 +58,9 @@ def _sign(p: float) -> str:
 def signal_post(s: dict) -> str:
     """s contient : id, pair, direction, entry_text, sl_text, sl_pips,
     tps (liste de dicts {text, pips}), rr, note, date"""
-    is_buy = s["direction"] == "BUY"
-    arrow = "🟢 <b>ACHAT (BUY)</b>" if is_buy else "🔴 <b>VENTE (SELL)</b>"
+    ot = s.get("order_type") or "MARKET"
+    arrow = ORDER_LABELS[(s["direction"], ot)]
+    pending = ot != "MARKET"
 
     lines = [
         f"💎 <b>{BRAND}</b>",
@@ -52,13 +69,15 @@ def signal_post(s: dict) -> str:
         "",
         f"{arrow} — <b>{escape(s['pair'])}</b>",
         "",
-        f"📍 <b>Entrée :</b> <code>{s['entry_text']}</code>",
+        f"📍 <b>{'Prix de l’ordre' if pending else 'Entrée'} :</b> <code>{s['entry_text']}</code>",
         f"🛑 <b>Stop Loss :</b> <code>{s['sl_text']}</code>  <i>({_sign(-abs(s['sl_pips']))} pips)</i>",
         "",
     ]
     for i, tp in enumerate(s["tps"], 1):
         lines.append(f"🎯 <b>TP{i} :</b> <code>{tp['text']}</code>  <i>({_sign(tp['pips'])} pips)</i>")
     lines.append("")
+    if pending:
+        lines.append(f"⏳ <b>Validité :</b> {'jusqu’au ' + s['expires'] if s.get('expires') else 'jusqu’à annulation'}")
     if s.get("rr"):
         lines.append(f"⚖️ <b>Ratio R:R :</b> 1:{s['rr']}")
     if s.get("note"):
@@ -70,6 +89,23 @@ def signal_post(s: dict) -> str:
 # =====================================================================
 #  2) LES MISES À JOUR (postées en réponse au signal d'origine)
 # =====================================================================
+def order_triggered(s: dict) -> str:
+    return (
+        f"⚡ <b>ORDRE DÉCLENCHÉ</b>\n"
+        f"<b>{escape(s['pair'])} {_kind(s)}</b> — Signal #{s['id']}\n"
+        f"Entrée à <code>{s['entry_text']}</code> : le trade est actif, SL et TP en place ✅"
+    )
+
+
+def order_cancelled(s: dict, expired: bool = False) -> str:
+    why = "Ordre expiré sans être déclenché" if expired else "Ordre retiré avant déclenchement"
+    return (
+        f"🚫 <b>ORDRE ANNULÉ</b>\n"
+        f"<b>{escape(s['pair'])} {_kind(s)}</b> — Signal #{s['id']}\n"
+        f"{why} : supprimez-le de votre plateforme. Aucun impact sur les résultats."
+    )
+
+
 def tp_hit(s: dict, n: int, pips: float, final: bool) -> str:
     txt = (
         f"🎯✅ <b>TP{n} ATTEINT !</b>\n"
@@ -176,6 +212,8 @@ Tu fais maintenant partie du cercle privé 🔐
 
 📌 <b>Comment lire un signal</b>
 🟢 BUY = achat · 🔴 SELL = vente
+⚡ Au marché = on entre tout de suite
+📥 LIMIT / 🚀 STOP = ordre en attente, à placer sur ta plateforme
 📍 Entrée · 🛑 Stop Loss · 🎯 Objectifs (TP1, TP2, TP3)
 
 🛡️ <b>Règles de gestion du risque</b>
