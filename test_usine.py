@@ -333,6 +333,7 @@ class SalesBotMenuTests(unittest.TestCase):
         self.ctx = MagicMock()
         self.ctx.bot_data = {}
         self.ctx.user_data = {}
+        self.ctx.args = []           # comme PTB : liste des arguments de la commande
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -427,3 +428,129 @@ class DeepLinkTests(unittest.TestCase):
             self.assertEqual(btn[0].web_app.url, "https://exemple.up.railway.app")
         finally:
             usine.SITE_URL = old
+
+
+class ReferralTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = ClientStore(os.path.join(self.tmp.name, "usine.db"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_code_is_stable_and_resolves(self):
+        code = self.store.referral_code(10)
+        self.assertEqual(code, self.store.referral_code(10))
+        self.assertEqual(self.store.referrer_for_code(code), 10)
+        self.assertIsNone(self.store.referrer_for_code("inconnu"))
+
+    def test_no_self_referral_and_no_existing_client(self):
+        self.assertFalse(self.store.set_pending_referral(10, 10))
+        self.store.add(20, TOKEN_B, "b_bot", "-1002", "BETA", trial_days=7)
+        self.assertFalse(self.store.set_pending_referral(20, 10))      # déjà client
+        self.assertTrue(self.store.set_pending_referral(30, 10))
+        self.assertEqual(self.store.pending_referrer(30), 10)
+
+    def test_sponsor_rewarded_once_on_first_payment(self):
+        now = utc_now()
+        sponsor_bot = self.store.add(10, TOKEN_A, "a_bot", "-1001", "ALPHA", trial_days=7, now=now)
+        before = self.store.get(sponsor_bot)["paid_until"]
+        child = self.store.add(30, TOKEN_B, "b_bot", "-1002", "BETA", trial_days=14, now=now, referred_by=10)
+        self.store.extend(child, 30, "STARS", 1500, "charge-1", now=now)
+        res = self.store.reward_referrer(child, 30, now=now)
+        self.assertIsNotNone(res)
+        self.assertEqual(res[0], 10)
+        self.assertGreater(self.store.get(sponsor_bot)["paid_until"], before)
+        after = self.store.get(sponsor_bot)["paid_until"]
+        self.store.extend(child, 30, "STARS", 1500, "charge-2", now=now)          # 2e paiement du filleul
+        self.assertIsNone(self.store.reward_referrer(child, 30, now=now))         # pas de 2e récompense
+        self.assertEqual(self.store.get(sponsor_bot)["paid_until"], after)
+        self.assertEqual(self.store.referral_stats(10), {"invited": 1, "paid": 1, "days_earned": 30})
+
+    def test_unreferred_client_gives_nothing(self):
+        cid = self.store.add(30, TOKEN_B, "b_bot", "-1002", "BETA", trial_days=7)
+        self.assertIsNone(self.store.reward_referrer(cid, 30))
+
+    def test_old_database_is_migrated(self):
+        import sqlite3
+        path = os.path.join(self.tmp.name, "ancienne.db")
+        with sqlite3.connect(path) as c:      # base créée avant le parrainage
+            c.execute("""CREATE TABLE clients(id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL,
+                bot_token TEXT UNIQUE NOT NULL, bot_username TEXT, channel_id TEXT NOT NULL, brand TEXT NOT NULL,
+                timezone TEXT DEFAULT 'UTC', status TEXT DEFAULT 'ACTIF', paid_until TEXT NOT NULL,
+                reminded_at TEXT, created_at TEXT NOT NULL)""")
+        st = ClientStore(path)
+        cid = st.add(30, TOKEN_B, "b_bot", "-1002", "BETA", trial_days=7, referred_by=10)
+        self.assertEqual(st.get(cid)["referred_by"], 10)
+
+
+class ReferralFlowTests(SalesBotMenuTests):
+    """Parcours complet dans le robot de vente (Telegram simulé)."""
+
+    def test_invited_visitor_gets_longer_trial_and_sponsor_is_paid(self):
+        import asyncio
+        u = self.usine
+        u.STORE.add(10, TOKEN_A, "alpha_bot", "-1001", "ALPHA", trial_days=7)
+        code = u.STORE.referral_code(10)
+        # 1. le filleul ouvre le lien de parrainage
+        upd = self._update(uid=30)
+        self.ctx.args = [f"ref_{code}"]
+        asyncio.run(u.cmd_start(upd, self.ctx))
+        self.assertIn("Invité par un membre", upd.effective_message.reply_photo.call_args.kwargs["caption"])
+        # 2. il termine l'inscription
+        self.ctx.user_data.update(token=TOKEN_B, username="beta_bot", channel=-1002)
+        upd = self._update(uid=30)
+        upd.message.text = "BETA VIP"
+        self.ctx.bot.send_message = self.AsyncMock()
+        asyncio.run(u.creer_brand(upd, self.ctx))
+        child = u.STORE.by_owner(30)[0]
+        self.assertEqual(child["referred_by"], 10)
+        self.assertGreater(days_left_of(child), u.TRIAL_DAYS + 6)       # essai prolongé
+        # 3. il paie : le parrain reçoit ses jours et un message
+        before = u.STORE.by_owner(10)[0]["paid_until"]
+        u.STORE.extend(child["id"], 30, "STARS", 1500, "charge-x")
+        asyncio.run(u.credit_referrer(self.ctx.bot, child["id"]))
+        self.assertGreater(u.STORE.by_owner(10)[0]["paid_until"], before)
+        sent_to = [c.args[0] for c in self.ctx.bot.send_message.call_args_list]
+        self.assertIn(10, sent_to)
+
+    def test_parrainage_shows_link_and_share_button(self):
+        import asyncio
+        u = self.usine
+        u.STORE.add(10, TOKEN_A, "alpha_bot", "-1001", "ALPHA", trial_days=7)
+        self.ctx.bot.username = "MaUsineBot"
+        upd = self._update(uid=10)
+        asyncio.run(u.cmd_parrainage(upd, self.ctx))
+        text = upd.effective_message.reply_text.call_args.args[0]
+        self.assertIn("https://t.me/MaUsineBot?start=ref_", text)
+        btn = upd.effective_message.reply_text.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
+        self.assertTrue(btn.url.startswith("https://t.me/share/url?url="))
+
+
+def days_left_of(client):
+    from usine_db import days_left
+    return days_left(client)
+
+
+class FounderPriceTests(SalesBotMenuTests):
+    def test_locked_price_used_for_invoice_and_checkout(self):
+        import asyncio
+        u = self.usine
+        cid = u.STORE.add(10, TOKEN_A, "alpha_bot", "-1001", "ALPHA", trial_days=7)
+        self.assertEqual(u.client_price(u.STORE.get(cid)), u.PRICE_STARS)
+        u.STORE.set_price(cid, 1000)
+        c = u.STORE.get(cid)
+        self.assertEqual(u.client_price(c), 1000)
+        bot = self.MagicMock()
+        bot.send_invoice = self.AsyncMock()
+        asyncio.run(u.send_invoice(bot, 10, c))
+        self.assertEqual(bot.send_invoice.call_args.kwargs["prices"][0].amount, 1000)
+        for amount, ok in ((1000, True), (u.PRICE_STARS, False)):
+            upd = self.MagicMock()
+            q = upd.pre_checkout_query
+            q.invoice_payload, q.currency, q.total_amount = f"sub:{cid}", "XTR", amount
+            q.answer = self.AsyncMock()
+            asyncio.run(u.on_precheckout(upd, self.ctx))
+            self.assertEqual(q.answer.call_args.kwargs["ok"], ok)
+        u.STORE.set_price(cid, None)
+        self.assertEqual(u.client_price(u.STORE.get(cid)), u.PRICE_STARS)

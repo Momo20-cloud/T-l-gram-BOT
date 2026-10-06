@@ -65,6 +65,7 @@ Ton identifiant Telegram (pour `OWNER_IDS`) : envoie `/id` à ton robot VIP actu
 | `/suspendre 3` · `/reactiver 3` | couper / rallumer un robot |
 | `/supprimer 3` | arrêter et retirer (ses données restent sur le disque) |
 | `/journal 3` | dernières lignes du journal de son robot |
+| `/tarif 3 1000` | tarif bloqué pour le client #3 (offre fondateurs) · `/tarif 3 normal` pour annuler |
 
 Tu reçois automatiquement : chaque nouveau client, chaque paiement, chaque expiration, et une alerte si le robot d'un client plante en boucle.
 
@@ -73,6 +74,7 @@ Tu reçois automatiquement : chaque nouveau client, chaque paiement, chaque expi
 - `/creer` : jeton de son robot (message effacé aussitôt) → canal vérifié → nom de marque → robot en ligne.
 - Dans **son** robot : `/signal`, mode rapide en un message, `/ouverts`, `/bilan`, `/news`, et **`/reglages`** (favoris, fuseau horaire, heure des bilans, bandeau photo, BE auto, % aux TP, rappel news).
 - `/monrobot` et `/abonner` dans ton robot de vente pour voir son abonnement et payer.
+- `/parrainage` : son lien personnel. Son filleul a 14 jours d'essai, et lui gagne +30 jours au premier paiement du filleul.
 
 ## Dépannage
 

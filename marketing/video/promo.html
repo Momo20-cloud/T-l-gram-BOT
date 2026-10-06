@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Vidéo de présentation</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Sora:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#07080c;--card:#10131b;--line:rgba(255,255,255,.09);--text:#eef0f5;--muted:#9aa3b4;--gold:#e3b341;--gold2:#f7dc8c;--gold3:#b9852a;--green:#2bd48a;--red:#ff5d6c;--tg:#2aabee}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1080px;height:1920px;overflow:hidden;background:var(--bg)}
+body{font-family:Inter,"Noto Color Emoji",sans-serif;color:var(--text);-webkit-font-smoothing:antialiased;position:relative}
+.abs{position:absolute}
+#bg{inset:0;background:radial-gradient(1100px 900px at 85% -5%,rgba(227,179,65,.22),transparent 60%),radial-gradient(900px 700px at -10% 75%,rgba(42,171,238,.10),transparent 60%),var(--bg)}
+#grid{inset:0;opacity:.55;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:90px 90px;mask-image:radial-gradient(ellipse 90% 70% at 50% 40%,#000 25%,transparent 80%)}
+.gold{background:linear-gradient(100deg,var(--gold2),var(--gold) 45%,var(--gold3));-webkit-background-clip:text;background-clip:text;color:transparent}
+h1,h2,.sora{font-family:Sora,Inter,sans-serif;letter-spacing:-.02em}
+
+/* marque en haut */
+#brand{left:70px;top:90px;display:flex;align-items:center;gap:18px;font:700 34px Sora;letter-spacing:-.01em}
+#brand svg{width:56px;height:56px}
+/* titres de scène */
+.title{left:70px;right:70px;top:210px;font-family:Sora;font-weight:800;font-size:76px;line-height:1.05}
+.step{display:inline-flex;align-items:center;justify-content:center;width:84px;height:84px;border-radius:24px;margin-right:22px;vertical-align:-14px;font:800 46px Sora;color:#1a1204;background:linear-gradient(180deg,var(--gold2),var(--gold))}
+
+/* scène 1 */
+#s1{inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 80px}
+#s1 .l{font-family:Sora;font-weight:800;font-size:132px;line-height:1.02}
+#s1 .sub{margin-top:50px;font-size:44px;color:var(--muted);font-weight:500}
+
+/* téléphone */
+#phone{left:150px;top:520px;width:780px;height:1180px;border-radius:84px;padding:20px;background:linear-gradient(160deg,#2c313d,#12151d 40%,#0b0d12);box-shadow:0 80px 160px -40px rgba(0,0,0,.95),0 0 0 2px rgba(255,255,255,.07),0 0 220px -40px rgba(227,179,65,.45)}
+#screen{position:relative;width:100%;height:100%;border-radius:66px;overflow:hidden;background:#0e1621}
+.tghead{position:absolute;left:0;right:0;top:0;height:150px;display:flex;align-items:center;gap:24px;padding:40px 36px 0;background:#17212b;border-bottom:2px solid rgba(0,0,0,.4);z-index:2}
+.av{width:76px;height:76px;border-radius:50%;display:grid;place-items:center;font:800 28px Sora;color:#1a1204;background:linear-gradient(135deg,var(--gold2),var(--gold3));flex:none}
+.av.bot{background:linear-gradient(135deg,#3b4a5c,#1d2733);color:var(--gold)}
+.tghead .t{font-weight:700;font-size:32px}
+.tghead .s{font-size:24px;color:#7f91a4;margin-top:2px}
+.view{position:absolute;left:0;right:0;top:150px;bottom:0;padding:26px 24px;display:flex;flex-direction:column;justify-content:flex-end;gap:18px}
+.b{max-width:92%;border-radius:30px;font-size:25px;line-height:1.45;box-shadow:0 2px 0 rgba(0,0,0,.3);white-space:pre-line}
+.b .tx{padding:18px 24px 10px}
+.b .tm{text-align:right;font-size:19px;color:#6d8396;padding:0 20px 12px}
+.b.in{background:#182533;border-bottom-left-radius:10px;align-self:flex-start}
+.b.out{background:#2b5278;border-bottom-right-radius:10px;align-self:flex-end;font-family:"JetBrains Mono",monospace;font-size:26px}
+.b code,.mono{font-family:"JetBrains Mono",monospace;color:#9fd6ff;font-size:.95em}
+.btns{display:flex;gap:10px;padding:0 14px 14px}
+.btns span{flex:1;text-align:center;padding:14px 0;border-radius:16px;background:rgba(255,255,255,.08);font-weight:600;font-size:23px}
+.inputbar{position:absolute;left:0;right:0;bottom:0;height:120px;background:#17212b;display:flex;align-items:center;gap:18px;padding:0 26px;z-index:3}
+.inputbar .field{flex:1;font:500 25px "JetBrains Mono",monospace;color:#e8eef5;white-space:nowrap;overflow:hidden}
+.inputbar .ph{color:#6d8396;font-family:Inter}
+.send{width:74px;height:74px;border-radius:50%;background:var(--tg);display:grid;place-items:center;flex:none}
+.caret{display:inline-block;width:3px;height:30px;background:var(--gold);vertical-align:-5px;margin-left:2px}
+.chart{position:relative;height:300px;background:#0c0f15;border-radius:30px 30px 0 0;overflow:hidden}
+.chart svg{width:100%;height:100%}
+.banner{position:absolute;left:0;right:0;bottom:0;height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 22px;background:#0c0e14;border-top:4px solid var(--gold);font:800 20px Inter;letter-spacing:.04em}
+.reply{border-left:4px solid var(--tg);padding-left:14px;margin:18px 22px 0;font-size:21px;color:#7fb7e0}
+
+/* puces */
+.chip{display:inline-flex;align-items:center;gap:14px;padding:22px 30px;border-radius:26px;background:rgba(16,19,27,.92);border:2px solid rgba(227,179,65,.45);box-shadow:0 30px 60px -20px rgba(0,0,0,.8);font-weight:700;font-size:34px;white-space:nowrap}
+.chip.g{border-color:rgba(43,212,138,.55)}
+
+/* bilan */
+#report{left:110px;right:110px;top:560px;padding:56px;border-radius:48px;background:linear-gradient(180deg,#141821,#0c0e14);border:2px solid rgba(227,179,65,.4);box-shadow:0 60px 140px -50px rgba(227,179,65,.45)}
+#report .h{display:flex;justify-content:space-between;align-items:baseline;font:800 44px Sora}
+.big{font:800 128px Sora;letter-spacing:-.03em;margin:30px 0 4px}
+.bar{height:22px;border-radius:12px;background:rgba(255,255,255,.07);overflow:hidden;margin:26px 0 34px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--green),#7cf0bd)}
+.row{display:flex;justify-content:space-between;font-size:38px;padding:16px 0;border-top:2px solid var(--line)}
+.up{color:var(--green);font-weight:700}.dn{color:var(--red);font-weight:700}
+.note{font-size:24px;color:#6b7385;margin-top:24px;text-align:right}
+
+/* grille de fonctions */
+#feats{left:70px;right:70px;top:520px;display:grid;grid-template-columns:1fr 1fr;gap:30px}
+.f{padding:46px 38px;border-radius:40px;background:linear-gradient(180deg,var(--card),#0b0d13);border:2px solid var(--line)}
+.f .e{font-size:64px}
+.f b{display:block;font:800 40px Sora;margin:22px 0 10px;letter-spacing:-.01em}
+.f span{font-size:28px;color:var(--muted);line-height:1.35}
+
+/* fin */
+#s7{inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 70px}
+#s7 svg{width:330px;height:330px}
+#s7 h2{font-size:104px;font-weight:800;line-height:1.02;margin-top:40px}
+#s7 .p{font-size:46px;color:var(--muted);margin-top:30px}
+.cta{margin-top:70px;display:inline-flex;align-items:center;gap:18px;padding:38px 64px;border-radius:36px;font:800 52px Sora;color:#1a1204;background:linear-gradient(180deg,var(--gold2),var(--gold) 55%,#d39f2f);box-shadow:0 30px 80px -20px rgba(227,179,65,.7),inset 0 2px 0 rgba(255,255,255,.5)}
+.link{margin-top:56px;font-size:40px;color:var(--text);font-weight:600}
+.link small{display:block;font-size:30px;color:var(--muted);font-weight:500;margin-top:12px}
+#progress{left:0;bottom:0;height:10px;background:linear-gradient(90deg,var(--gold2),var(--gold))}
+.disc{left:0;right:0;bottom:44px;text-align:center;font-size:22px;color:#596173}
+</style>
+</head>
+<body>
+<div id="bg" class="abs"></div>
+<div id="grid" class="abs"></div>
+
+<svg width="0" height="0" style="position:absolute">
+ <defs>
+  <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff1c2"/><stop offset=".45" stop-color="#f2cd6a"/><stop offset="1" stop-color="#b9852a"/></linearGradient>
+  <linearGradient id="g2" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e9b94d"/><stop offset="1" stop-color="#8f6418"/></linearGradient>
+  <linearGradient id="g3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff8dc"/><stop offset="1" stop-color="#e3b341"/></linearGradient>
+  <radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#e3b341" stop-opacity=".45"/><stop offset="1" stop-color="#e3b341" stop-opacity="0"/></radialGradient>
+  <g id="diamond">
+   <polygon points="-230,-70 -130,-200 130,-200 230,-70 0,250" fill="url(#g2)"/>
+   <polygon points="-230,-70 -130,-200 -60,-70" fill="url(#g3)"/>
+   <polygon points="-130,-200 0,-200 -60,-70" fill="#fff6d6"/>
+   <polygon points="0,-200 130,-200 60,-70" fill="#f7dc8c"/>
+   <polygon points="130,-200 230,-70 60,-70" fill="#d9a63a"/>
+   <polygon points="-60,-70 0,-200 60,-70" fill="#ffe9a8"/>
+   <polygon points="-230,-70 -60,-70 0,250" fill="url(#g1)"/>
+   <polygon points="-60,-70 60,-70 0,250" fill="#f2cd6a"/>
+   <polygon points="60,-70 230,-70 0,250" fill="#a8771f"/>
+  </g>
+ </defs>
+</svg>
+
+<div id="brand" class="abs"><svg viewBox="-260 -260 520 540"><use href="#diamond"/></svg><span>{{SITE_NAME}}</span></div>
+
+<!-- 1. accroche -->
+<div id="s1" class="abs">
+  <div class="l" id="h1a">Tu publies</div>
+  <div class="l" id="h1b">encore tes signaux</div>
+  <div class="l gold" id="h1c">à la main ?</div>
+  <div class="sub" id="h1d">Copier-coller, calculer les pips, annoncer chaque TP…</div>
+</div>
+
+<!-- titres -->
+<div class="title abs" id="t2"><span class="step">1</span>Tu envoies<br><span class="gold">un seul message</span></div>
+<div class="title abs" id="t3"><span class="step">2</span>Ton canal reçoit<br><span class="gold">un signal pro</span></div>
+<div class="title abs" id="t4"><span class="step">3</span>Le suivi des TP<br><span class="gold">en un clic</span></div>
+<div class="title abs" id="t5">📊 Les bilans<br><span class="gold">se publient seuls</span></div>
+<div class="title abs" id="t6">Et tout<br><span class="gold">le reste.</span></div>
+
+<!-- téléphone -->
+<div id="phone" class="abs"><div id="screen">
+  <!-- vue robot (privé) -->
+  <div id="vbot">
+    <div class="tghead"><div class="av bot">🤖</div><div><div class="t">Mon robot</div><div class="s">robot</div></div></div>
+    <div class="view" style="bottom:120px">
+      <div class="b out" id="m1"><div class="tx">XAUUSD BUY 2650 SL 2645 TP 2655 2660 2670</div><div class="tm">13:42 ✓✓</div></div>
+      <div class="b in" id="m2"><div class="tx">✅ Compris : <b>XAUUSD BUY</b> @ 2650 · SL 2645 · TP 2655 / 2660 / 2670
+
+👀 <b>Aperçu</b> prêt</div><div class="btns"><span>✅ Publier</span><span>❌ Annuler</span></div></div>
+    </div>
+    <div class="inputbar"><div class="field" id="typed"></div><div class="send"><svg width="34" height="34" viewBox="0 0 24 24" fill="#fff"><path d="M3 20.5 21 12 3 3.5 3 10l12 2-12 2z"/></svg></div></div>
+  </div>
+  <!-- vue canal -->
+  <div id="vchan" style="position:absolute;inset:0;opacity:0">
+    <div class="tghead"><div class="av">GS</div><div><div class="t">GOLD SNIPER VIP</div><div class="s">canal</div></div></div>
+    <div class="view">
+      <div class="b in" id="post" style="max-width:100%">
+        <div class="chart">
+          <svg viewBox="0 0 700 300" preserveAspectRatio="none">
+            <defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2bd48a" stop-opacity=".28"/><stop offset="1" stop-color="#2bd48a" stop-opacity="0"/></linearGradient></defs>
+            <path id="areaPath" d="M0 210 60 196 110 214 160 184 210 192 260 168 300 176 350 140 400 152 450 120 500 128 550 92 600 100 650 68 700 56V252H0Z" fill="url(#area)"/>
+            <path id="linePath" d="M0 210 60 196 110 214 160 184 210 192 260 168 300 176 350 140 400 152 450 120 500 128 550 92 600 100 650 68 700 56" fill="none" stroke="#2bd48a" stroke-width="4" pathLength="1"/>
+            <g stroke-dasharray="8 8" stroke-width="2"><path d="M0 44H700" stroke="#2bd48a"/><path d="M0 160H700" stroke="#e3b341"/><path d="M0 224H700" stroke="#ff5d6c"/></g>
+            <g font-family="Inter" font-size="18" font-weight="800"><text x="12" y="36" fill="#2bd48a">TP 2660</text><text x="12" y="152" fill="#e3b341">ENTRÉE 2650</text><text x="12" y="216" fill="#ff5d6c">SL 2645</text></g>
+          </svg>
+          <div class="banner"><span style="color:var(--gold)">GOLD SNIPER VIP</span><span style="color:#ddd">XAUUSD BUY  #128</span></div>
+        </div>
+        <div class="tx">💎 <b>GOLD SNIPER VIP</b> · 📊 <b>SIGNAL #128</b>
+🟢 <b>ACHAT (BUY)</b> au marché — <b>XAUUSD</b>
+
+📍 <b>Entrée :</b> <code>2650</code>
+🛑 <b>Stop Loss :</b> <code>2645</code>  <i>(-50 pips)</i>
+🎯 <b>TP1 :</b> <code>2655</code>  <i>(+50 pips)</i>
+🎯 <b>TP2 :</b> <code>2660</code>  <i>(+100 pips)</i>
+🎯 <b>TP3 :</b> <code>2670</code>  <i>(+200 pips)</i>
+⚖️ <b>R:R</b> 1:1.0</div><div class="tm">13:42</div>
+      </div>
+      <div class="b in" id="tp1"><div class="reply">GOLD SNIPER VIP · Signal #128</div><div class="tx">🎯✅ <b>TP1 ATTEINT !</b>  <b>+50 pips</b>
+💰 <b>50 %</b> clôturés → <b>+25 pips</b> sécurisés
+🔒 SL déplacé au point d'entrée (BE)</div><div class="tm">14:07</div></div>
+      <div class="b in" id="tp2"><div class="reply">GOLD SNIPER VIP · Signal #128</div><div class="tx">🎯✅ <b>TP2 ATTEINT !</b>  <b>+100 pips</b>
+📊 Total sécurisé : <b>+75 pips</b></div><div class="tm">14:31</div></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- puces -->
+<div class="chip abs" id="c1" style="left:30px;top:800px">🖼 Ta marque sur la photo</div>
+<div class="chip abs" id="c2" style="right:30px;top:1060px">📐 Pips calculés</div>
+<div class="chip abs" id="c3" style="left:60px;top:1620px">⚖️ Ratio R:R auto</div>
+<div class="chip g abs" id="c4" style="right:60px;top:420px">🔒 BE automatique</div>
+
+<!-- bilan -->
+<div id="report" class="abs">
+  <div class="h"><span>📊 Bilan de la semaine</span></div>
+  <div class="big up" id="pips">+0 pips</div>
+  <div style="font-size:36px;color:var(--muted)">Réussite <b style="color:var(--text)" id="rate">0 %</b></div>
+  <div class="bar"><i id="barfill" style="width:0"></i></div>
+  <div class="row" id="r1"><span>✅ XAUUSD</span><span class="up">+2.4R</span></div>
+  <div class="row" id="r2"><span>✅ NAS100</span><span class="up">+1.8R</span></div>
+  <div class="row" id="r3"><span>✅ EURUSD</span><span class="up">+1.2R</span></div>
+  <div class="row" id="r4"><span>❌ GBPJPY</span><span class="dn">-1R</span></div>
+  <div class="note">Exemple · publié automatiquement chaque vendredi</div>
+</div>
+
+<!-- fonctions -->
+<div id="feats" class="abs">
+  <div class="f"><div class="e">🌍</div><b>120+ actifs</b><span>Forex, or, indices, pétrole, crypto</span></div>
+  <div class="f"><div class="e">⏳</div><b>LIMIT &amp; STOP</b><span>Ordres en attente avec expiration</span></div>
+  <div class="f"><div class="e">📰</div><b>Annonces éco</b><span>NFP, CPI, FOMC + rappel automatique</span></div>
+  <div class="f"><div class="e">🎯</div><b>Clôtures partielles</b><span>25 %, 50 %… à chaque TP</span></div>
+  <div class="f"><div class="e">⚙️</div><b>/reglages</b><span>Fuseau, favoris, heure des bilans</span></div>
+  <div class="f"><div class="e">🔐</div><b>Données privées</b><span>Ton robot, ta base, rien de partagé</span></div>
+</div>
+
+<!-- fin -->
+<div id="s7" class="abs">
+  <svg viewBox="-300 -300 600 600"><circle r="300" fill="url(#glow)"/><g id="dia7"><use href="#diamond"/></g></svg>
+  <h2>Ton robot de signaux<br><span class="gold">prêt en 3 minutes</span></h2>
+  <div class="p">Sans code · Ton canal · Ta marque</div>
+  <div class="cta" id="cta">🎁 {{TRIAL_DAYS}} jours gratuits</div>
+  <div class="link">👉 {{LINK_LINE}}<small>{{SITE_NAME}}</small></div>
+</div>
+
+<div class="disc abs" id="disc">Outil de publication · aucun conseil en investissement</div>
+<div id="progress" class="abs"></div>
+
+<script>
+const D = 31;   // durée totale (s)
+const $ = id => document.getElementById(id);
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const ease = x => 1 - Math.pow(1 - clamp(x), 3);                 // décélération douce
+const back = x => { x = clamp(x); const c = 1.6; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+const p = (t, a, b) => clamp((t - a) / (b - a));
+// visibilité d'un bloc : entrée [a, a+din], sortie [b-dout, b]
+const win = (t, a, b, din = .45, dout = .35) => Math.min(ease(p(t, a, a + din)), 1 - ease(p(t, b - dout, b)));
+function show(el, o, dy = 0, sc = 1) {
+  el.style.opacity = o;
+  el.style.transform = `translateY(${dy}px) scale(${sc})`;
+  el.style.visibility = o <= 0.001 ? "hidden" : "visible";
+}
+const MSG = "XAUUSD BUY 2650 SL 2645 TP 2655 2660 2670";
+
+function render(t) {
+  // fond qui respire légèrement
+  $("bg").style.transform = `scale(${1.04 + .03 * Math.sin(t / 3)})`;
+  $("brand").style.opacity = t < 26 ? .95 : 1 - ease(p(t, 26, 26.5));
+
+  // 1. accroche 0 → 3.4
+  const o1 = win(t, 0, 3.4, .01, .4);
+  ["h1a", "h1b", "h1c", "h1d"].forEach((id, i) => {
+    const k = ease(p(t, .15 + i * .32, .75 + i * .32));
+    show($(id), Math.min(k, o1), (1 - k) * 60);
+  });
+
+  // téléphone : visible 3.2 → 18.8
+  const ph = win(t, 3.2, 18.8, .55, .45);
+  show($("phone"), ph, (1 - ease(p(t, 3.2, 3.9))) * 220 + ease(p(t, 18.35, 18.8)) * 120);
+
+  // 2. message envoyé 3.2 → 8.6
+  show($("t2"), win(t, 3.3, 8.6), (1 - ease(p(t, 3.3, 3.9))) * 40);
+  const typed = Math.round(MSG.length * p(t, 4.0, 6.0));
+  const sent = t >= 6.25;
+  $("typed").innerHTML = sent || typed === 0 && t < 4.0
+    ? '<span class="ph">Message</span>'
+    : MSG.slice(0, typed) + '<span class="caret"></span>';
+  show($("m1"), ease(p(t, 6.25, 6.6)), (1 - ease(p(t, 6.25, 6.6))) * 50);
+  show($("m2"), ease(p(t, 7.0, 7.4)), (1 - ease(p(t, 7.0, 7.4))) * 50);
+
+  // bascule robot → canal à 8.6
+  const sw = ease(p(t, 8.5, 9.0));
+  $("vbot").style.opacity = 1 - sw;
+  $("vchan").style.opacity = sw;
+
+  // 3. post dans le canal 8.6 → 14.2
+  show($("t3"), win(t, 8.7, 14.2), (1 - ease(p(t, 8.7, 9.3))) * 40);
+  const kp = ease(p(t, 9.0, 9.7));
+  show($("post"), kp, (1 - kp) * 160);
+  $("linePath").style.strokeDasharray = "1";
+  $("linePath").style.strokeDashoffset = 1 - ease(p(t, 9.3, 10.8));
+  $("areaPath").style.opacity = ease(p(t, 10.0, 10.9));
+  [["c1", 10.6], ["c2", 11.3], ["c3", 12.0]].forEach(([id, a]) => {
+    const k = back(p(t, a, a + .45));
+    show($(id), Math.min(clamp(k), win(t, a, 14.1)), 0, .6 + .4 * k);
+  });
+
+  // 4. suivi TP 14.2 → 18.8 : le post remonte, les réponses arrivent
+  show($("t4"), win(t, 14.3, 18.8), (1 - ease(p(t, 14.3, 14.9))) * 40);
+  const k1 = ease(p(t, 14.8, 15.3)), k2 = ease(p(t, 16.6, 17.1));
+  $("tp1").style.display = t >= 14.8 ? "block" : "none";
+  $("tp2").style.display = t >= 16.6 ? "block" : "none";
+  show($("tp1"), k1, (1 - k1) * 80);
+  show($("tp2"), k2, (1 - k2) * 80);
+  const kc = back(p(t, 15.5, 15.95));
+  show($("c4"), Math.min(clamp(kc), win(t, 15.5, 18.7)), 0, .6 + .4 * kc);
+
+  // 5. bilan 18.8 → 22.8
+  const kr = win(t, 18.9, 22.8, .5, .35);
+  show($("t5"), win(t, 18.9, 22.8), (1 - ease(p(t, 18.9, 19.5))) * 40);
+  show($("report"), kr, (1 - ease(p(t, 18.9, 19.5))) * 120, .96 + .04 * ease(p(t, 18.9, 19.5)));
+  const kn = ease(p(t, 19.4, 21.0));
+  $("pips").textContent = `+${Math.round(412 * kn)} pips`;
+  $("rate").textContent = `${Math.round(75 * kn)} %`;
+  $("barfill").style.width = `${75 * kn}%`;
+  ["r1", "r2", "r3", "r4"].forEach((id, i) => {
+    const k = ease(p(t, 19.8 + i * .25, 20.2 + i * .25));
+    show($(id), k, (1 - k) * 30);
+  });
+
+  // 6. fonctions 22.8 → 26.4
+  show($("t6"), win(t, 22.9, 26.4), (1 - ease(p(t, 22.9, 23.5))) * 40);
+  const fo = win(t, 22.9, 26.4, .3, .35);
+  [...document.querySelectorAll(".f")].forEach((el, i) => {
+    const k = back(p(t, 23.1 + i * .17, 23.6 + i * .17));
+    show(el, Math.min(clamp(k), fo), (1 - clamp(k)) * 60, .85 + .15 * clamp(k));
+  });
+
+  // 7. fin 26.3 → 31
+  const k7 = ease(p(t, 26.3, 27.0));
+  show($("s7"), k7);
+  const kd = back(p(t, 26.3, 27.1));
+  $("dia7").setAttribute("transform", `scale(${.5 + .5 * clamp(kd, 0, 1.2)}) rotate(${(1 - clamp(kd)) * -12})`);
+  [...$("s7").children].slice(1).forEach((el, i) => {
+    const k = ease(p(t, 26.8 + i * .25, 27.4 + i * .25));
+    el.style.opacity = k;
+    el.style.transform = `translateY(${(1 - k) * 50}px)`;
+  });
+  const pulse = 1 + .035 * Math.max(0, Math.sin((t - 28.3) * 4.2)) * (t > 28.3 ? 1 : 0);
+  $("cta").style.transform = `translateY(${(1 - ease(p(t, 27.3, 27.9))) * 50}px) scale(${pulse})`;
+
+  $("disc").style.opacity = .9 * ease(p(t, 27.5, 28));
+  $("progress").style.width = `${100 * clamp(t / D)}%`;
+}
+window.render = render;
+window.DURATION = D;
+render(0);
+</script>
+</body>
+</html>

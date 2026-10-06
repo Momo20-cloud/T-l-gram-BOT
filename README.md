@@ -9,5 +9,7 @@
 | `site/index.html` | la page de vente, servie par l'usine |
 | `GUIDE.md` | utiliser le robot au quotidien |
 | `DEPLOIEMENT.md` | **mettre l'usine en ligne sur Railway** |
+| `marketing/` | kit marketing, vidéo de présentation (MP4) et son script de fabrication |
+| `brand/` | photos de profil et bannière du robot |
 
 Lancer les tests : `python -m unittest test_usine test_reglages test_instruments`
