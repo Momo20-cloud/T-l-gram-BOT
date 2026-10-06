@@ -1,3 +1,4 @@
 .env
 signals.db
 __pycache__/
+usine_data/

@@ -5,6 +5,7 @@
   Formatage : HTML Telegram (<b>gras</b>, <i>italique</i>, <code>code</code>)
 =====================================================================
 """
+import os
 from html import escape as _html_escape
 
 
@@ -12,9 +13,10 @@ def escape(text) -> str:
     return _html_escape(str(text), quote=False)
 
 # --- Identité du canal ------------------------------------------------
-BRAND = "ANONYMETRADER VIP"
+# BRAND peut être changé par la variable d'environnement BRAND (utilisé par l'usine à robots)
+BRAND = os.getenv("BRAND", "").strip() or "ANONYMETRADER VIP"
 SEPARATOR = "━━━━━━━━━━━━━━━━━━"
-WATERMARK_TEXT = "ANONYMETRADER VIP"   # texte ajouté en bas des photos
+WATERMARK_TEXT = BRAND   # texte ajouté en bas des photos
 
 # Rappel de gestion du risque ajouté sous chaque signal
 FOOTER = (
@@ -23,7 +25,8 @@ FOOTER = (
 )
 
 # --- Taille d'un pip par actif (utilisé pour calculer les résultats) --
-# La clé est le début du symbole. Ajoute tes actifs ici si besoin.
+# Le catalogue complet (≈ 120 actifs) est dans instruments.py.
+# Ici : seulement des compléments pour les actifs hors catalogue (la clé est le début du symbole).
 PIP_SIZES = {
     "XAU": 0.1,      # Or : 1 pip = 0.10 $
     "XAG": 0.01,     # Argent

@@ -37,6 +37,7 @@ from telegram.ext import (
     filters,
 )
 
+import instruments as I
 import templates as T
 
 load_dotenv()
@@ -127,7 +128,10 @@ def utc_now_str() -> str:
 
 # ================================================================ calculs
 def pip_size(pair: str) -> float:
-    p = pair.upper()
+    p = I.normalize(pair)
+    known = I.pip_size(p)
+    if known is not None:
+        return known
     for k, v in T.PIP_SIZES.items():
         if p.startswith(k):
             return v
@@ -250,7 +254,7 @@ def admin_only(func):
 
 
 # ================================================================ commandes simples
-HELP = """🤖 <b>Robot ANONYMETRADER VIP</b>
+HELP = f"""🤖 <b>Robot {T.escape(T.BRAND)}</b>
 
 <b>Signaux</b>
 /signal — créer et publier un nouveau signal
@@ -270,6 +274,7 @@ HELP = """🤖 <b>Robot ANONYMETRADER VIP</b>
 /news — annonce (NFP, CPI, FOMC…) + rappel avant + chiffre réel
 
 <b>Canal</b>
+/reglages — favoris, fuseau horaire, heure des bilans, bandeau photo…
 /accueil — publie et épingle le message d'accueil
 /verifier — vérifie que le robot peut publier dans le canal
 /id — affiche ton identifiant Telegram
@@ -338,8 +343,7 @@ async def cmd_accueil(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sig_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["sig"] = {}
     context.user_data["_flow"] = True
-    rows = [[InlineKeyboardButton(p, callback_data=f"pair:{p}") for p in QUICK_PAIRS[i:i + 2]]
-            for i in range(0, len(QUICK_PAIRS), 2)]
+    rows = _pairs_kb_rows()
     await update.message.reply_text(
         "📊 <b>Nouveau signal</b>\n\n"
         "⚡ <b>Mode rapide</b> : envoie tout en un message, ex :\n"
@@ -351,10 +355,40 @@ async def sig_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return PAIR
 
 
+def _pairs_kb_rows():
+    """Actifs favoris (QUICK_PAIRS) + un bouton par catégorie du catalogue."""
+    fav = [I.normalize(p) for p in QUICK_PAIRS]
+    rows = [[InlineKeyboardButton(p, callback_data=f"pair:{p}") for p in fav[i:i + 2]] for i in range(0, len(fav), 2)]
+    cats = [InlineKeyboardButton(label, callback_data=f"cat:{key}") for key, (label, _) in I.CATEGORIES.items()]
+    return rows + [cats[i:i + 3] for i in range(0, len(cats), 3)]
+
+
+async def sig_pair_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    key = q.data.split(":", 1)[1]
+    if key == "back" or key not in I.CATEGORIES:
+        await q.edit_message_reply_markup(InlineKeyboardMarkup(_pairs_kb_rows()))
+        return PAIR
+    syms = I.category_symbols(key)
+    rows = [[InlineKeyboardButton(p, callback_data=f"pair:{p}") for p in syms[i:i + 4]] for i in range(0, len(syms), 4)]
+    rows.append([InlineKeyboardButton("⬅️ Retour", callback_data="cat:back")])
+    await q.edit_message_reply_markup(InlineKeyboardMarkup(rows))
+    return PAIR
+
+
+def unknown_pair_warning(pair: str) -> str:
+    if I.is_known(pair):
+        return ""
+    return (f"\n⚠️ <b>{escape(pair)}</b> n'est pas dans le catalogue : les pips seront calculés comme du Forex "
+            "(0.0001). Vérifie l'orthographe, ou ajoute l'actif dans instruments.py.")
+
+
 async def _ask_direction(msg, pair):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🟢 BUY", callback_data="dir:BUY"),
                                 InlineKeyboardButton("🔴 SELL", callback_data="dir:SELL")]])
-    await msg.reply_text(f"✅ {pair}\n\n2️⃣ Direction ?", reply_markup=kb)
+    await msg.reply_text(f"✅ {escape(pair)}{unknown_pair_warning(pair)}\n\n2️⃣ Direction ?", reply_markup=kb,
+                         parse_mode=ParseMode.HTML)
 
 
 async def sig_pair_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -370,7 +404,7 @@ async def sig_pair_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sig_pair_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if QUICK_RE.search(update.message.text or ""):
         return await quick_signal(update, context)
-    pair = re.sub(r"[^A-Z0-9./]", "", update.message.text.upper())[:15]
+    pair = I.normalize(update.message.text)
     if not pair:
         await update.message.reply_text("Tape un symbole valide, ex : XAUUSD")
         return PAIR
@@ -635,7 +669,7 @@ async def quick_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kind = s["direction"] if s["order_type"] == "MARKET" else f"{s['direction']} {s['order_type']}"
     await msg.reply_text(
         f"✅ Compris : <b>{escape(s['pair'])} {kind}</b> @ {s['entry_text']} · SL {s['sl_text']} · "
-        f"TP {' / '.join(s['tps_text'])}\n\n📸 Envoie la <b>photo</b> du graphique, ou /passer",
+        f"TP {' / '.join(s['tps_text'])}{unknown_pair_warning(s['pair'])}\n\n📸 Envoie la <b>photo</b> du graphique, ou /passer",
         parse_mode=ParseMode.HTML)
     return PHOTO
 
@@ -920,6 +954,8 @@ async def on_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{summary}\n\n{status_line(new_row)}", reply_markup=control_kb(new_row))
     elif wait[0] == "news_result":
         await news_publish_result(update, context, wait[1], txt)
+    elif wait[0] == "setting":
+        await setting_typed(update, context, wait[1], txt)
 
 
 @admin_only
@@ -1419,6 +1455,8 @@ def _num(v) -> tuple[str, float]:
 
 def parse_text_signal(txt: str) -> dict:
     """Format texte libre : 'XAUUSD BUY 2650 SL 2640 TP 2660 2670' (ou TP1 2660 TP2 2670)."""
+    txt = re.sub(r"(?i)\bS&P", "SP", txt)
+    txt = re.sub(r"\b([A-Za-z]{3,5})[/-]([A-Za-z]{3,4})\b", r"\1\2", txt)   # EUR/USD, BTC-USD -> EURUSD, BTCUSD
     toks = re.findall(r"[A-Za-zÀ-ÿ]+\d*|\d+(?:\.\d+)?", txt.upper())
     data, section, entry, tps, sl = {}, None, [], [], []
     for t in toks:
@@ -1442,7 +1480,7 @@ def parse_text_signal(txt: str) -> dict:
 
 def build_signal(d: dict) -> dict:
     """Transforme les données reçues de l'IA en signal validé (mêmes contrôles que /signal)."""
-    pair = re.sub(r"[^A-Z0-9./]", "", str(d.get("pair") or d.get("symbol") or d.get("ticker") or "").upper())[:15]
+    pair = I.normalize(d.get("pair") or d.get("symbol") or d.get("ticker") or "")
     if not pair:
         raise ValueError("champ 'pair' manquant (ex : XAUUSD)")
     raw_dir = str(d.get("direction") or d.get("side") or d.get("action") or "").strip().upper().replace("_", " ")
@@ -1705,9 +1743,18 @@ async def _handle_http(reader, writer):
         writer.close()
 
 
+BOT_COMMANDS = [("signal", "Nouveau signal"), ("ouverts", "Signaux en cours"), ("bilan", "Bilan / statistiques"),
+                ("news", "Annonce économique"), ("reglages", "Réglages du robot"), ("accueil", "Message d'accueil du canal"),
+                ("verifier", "Vérifier l'accès au canal"), ("aide", "Toutes les commandes")]
+
+
 async def start_api(app):
     global _APP
     _APP = app
+    try:
+        await app.bot.set_my_commands(BOT_COMMANDS)
+    except Exception as e:
+        log.warning("Menu des commandes non mis à jour : %s", e)
     if not API_KEY:
         log.info("API désactivée (ajoute API_KEY pour que ton IA puisse envoyer des signaux).")
         return
@@ -1721,6 +1768,244 @@ async def stop_api(app):
     if srv:
         srv.close()
         await srv.wait_closed()
+
+
+# ================================================================ réglages (/reglages)
+# Chaque admin règle son robot depuis Telegram. Les valeurs sont gardées dans la base et
+# remplacent celles des variables d'environnement (qui restent les valeurs par défaut).
+WEEKDAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+TZ_CHOICES = ["UTC", "Europe/Paris", "Africa/Casablanca", "Africa/Algiers", "Africa/Tunis",
+              "Africa/Dakar", "Africa/Abidjan", "Europe/Brussels", "America/Montreal", "Asia/Dubai"]
+TRUE_WORDS = ("1", "true", "oui", "yes")
+
+
+def _env_defaults() -> dict:
+    return {
+        "favoris": os.getenv("QUICK_PAIRS", "XAUUSD,BTCUSD,EURUSD,GBPUSD"),
+        "fuseau": os.getenv("TIMEZONE", "UTC"),
+        "bilan_heure": os.getenv("DAILY_REPORT_TIME", "22:00").strip(),
+        "bilan_jour": os.getenv("WEEKLY_REPORT_DAY", "vendredi").strip().lower(),
+        "filigrane": os.getenv("WATERMARK", "true"),
+        "be_auto": os.getenv("AUTO_BE_AFTER_TP1", "true"),
+        "tp_pct": os.getenv("TP_DEFAULT_PCT", "50") or "50",
+        "rappel_news": os.getenv("NEWS_REMINDER_MIN", "15") or "0",
+    }
+
+
+def _check_setting(key: str, raw: str) -> str:
+    """Valide une valeur saisie et la renvoie normalisée (lève ValueError avec un message clair)."""
+    raw = (raw or "").strip()
+    if key == "favoris":
+        syms = [I.normalize(p) for p in re.split(r"[,\s;]+", raw) if p.strip()]
+        syms = list(dict.fromkeys(s for s in syms if s))
+        if not 1 <= len(syms) <= 8:
+            raise ValueError("donne entre 1 et 8 actifs, séparés par des virgules (ex : XAUUSD, US30, BTCUSD)")
+        return ",".join(syms)
+    if key == "fuseau":
+        try:
+            return ZoneInfo(raw).key
+        except Exception:
+            raise ValueError("fuseau inconnu (ex : Europe/Paris, Africa/Casablanca, UTC)")
+    if key == "bilan_heure":
+        if raw.lower() in ("off", "non", "aucun", "désactivé", "desactive", ""):
+            return ""
+        m = re.fullmatch(r"(\d{1,2})[:h](\d{2})", raw.lower())
+        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+            raise ValueError("heure invalide (ex : 22:00, ou « off » pour désactiver)")
+        return f"{int(m.group(1)):02d}:{m.group(2)}"
+    if key == "bilan_jour":
+        if raw.lower() not in WEEKDAYS:
+            raise ValueError("jour invalide")
+        return raw.lower()
+    if key in ("filigrane", "be_auto"):
+        return "true" if raw.lower() in TRUE_WORDS else "false"
+    if key == "tp_pct":
+        v = float(raw.replace(",", "."))
+        if not 1 <= v <= 100:
+            raise ValueError("pourcentage entre 1 et 100")
+        return f"{v:g}"
+    if key == "rappel_news":
+        v = int(float(raw))
+        if not 0 <= v <= 240:
+            raise ValueError("minutes entre 0 et 240")
+        return str(v)
+    raise ValueError("réglage inconnu")
+
+
+def get_settings() -> dict:
+    vals = _env_defaults()
+    with db() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+        stored = dict(c.execute("SELECT key, value FROM settings").fetchall())
+    for k, v in stored.items():
+        if k in vals:
+            vals[k] = v
+    for k, v in list(vals.items()):          # une valeur d'environnement invalide ne doit pas bloquer le robot
+        try:
+            vals[k] = _check_setting(k, v)
+        except (ValueError, TypeError):
+            vals[k] = _check_setting(k, {"favoris": "XAUUSD,BTCUSD,EURUSD,GBPUSD", "fuseau": "UTC",
+                                         "bilan_heure": "22:00", "bilan_jour": "vendredi", "filigrane": "true",
+                                         "be_auto": "true", "tp_pct": "50", "rappel_news": "15"}[k])
+    return vals
+
+
+def save_setting(key: str, raw: str) -> str:
+    value = _check_setting(key, raw)
+    with db() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+        c.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  (key, value))
+    return value
+
+
+def apply_settings():
+    """Recharge les réglages dans les variables utilisées partout dans le robot."""
+    global QUICK_PAIRS, TZ, DAILY_REPORT_TIME, WEEKLY_REPORT_DAY, WATERMARK, AUTO_BE_AFTER_TP1, TP_DEFAULT_PCT
+    global NEWS_REMINDER_MIN
+    s = get_settings()
+    QUICK_PAIRS = s["favoris"].split(",")
+    TZ = ZoneInfo(s["fuseau"])
+    DAILY_REPORT_TIME = s["bilan_heure"]
+    WEEKLY_REPORT_DAY = s["bilan_jour"]
+    WATERMARK = s["filigrane"] == "true"
+    AUTO_BE_AFTER_TP1 = s["be_auto"] == "true"
+    TP_DEFAULT_PCT = float(s["tp_pct"])
+    NEWS_REMINDER_MIN = int(s["rappel_news"])
+    return s
+
+
+def schedule_reports(job_queue):
+    """(Re)programme les bilans automatiques avec les réglages actuels."""
+    if not job_queue:
+        return
+    for name in ("daily", "weekly", "monthly"):
+        for job in job_queue.get_jobs_by_name(name):
+            job.schedule_removal()
+    if not DAILY_REPORT_TIME:
+        log.info("Bilans automatiques désactivés")
+        return
+    # PTB : 0 = dimanche ... 6 = samedi
+    h, m = map(int, DAILY_REPORT_TIME.split(":"))
+    job_queue.run_daily(job_report, time(h, m, tzinfo=TZ), days=(1, 2, 3, 4, 5), data="jour", name="daily")
+    days = {"dimanche": 0, "lundi": 1, "mardi": 2, "mercredi": 3, "jeudi": 4, "vendredi": 5, "samedi": 6}
+    wd = days.get(WEEKLY_REPORT_DAY, 5)
+    weekly_at = (datetime(2000, 1, 1, h, m) + timedelta(minutes=5)).time()
+    job_queue.run_daily(job_report, weekly_at.replace(tzinfo=TZ), days=(wd,), data="semaine", name="weekly")
+    monthly_at = (datetime(2000, 1, 1, h, m) + timedelta(minutes=10)).time()
+    job_queue.run_daily(job_report, monthly_at.replace(tzinfo=TZ), data="mois", name="monthly")
+    log.info("Bilans auto : quotidien %s (%s), hebdo le %s, mensuel le dernier jour du mois",
+             DAILY_REPORT_TIME, TZ.key, WEEKLY_REPORT_DAY)
+
+
+def _onoff(v: str) -> str:
+    return "✅ activé" if v == "true" else "❌ désactivé"
+
+
+def settings_text(s: dict) -> str:
+    return (
+        "⚙️ <b>Réglages du robot</b>\n\n"
+        f"⭐ <b>Actifs favoris</b> : {escape(' · '.join(s['favoris'].split(',')))}\n"
+        f"🕒 <b>Fuseau horaire</b> : {escape(s['fuseau'])}\n"
+        f"📊 <b>Bilan automatique</b> : {('à ' + s['bilan_heure'] + ' (lun→ven)') if s['bilan_heure'] else '❌ désactivé'}\n"
+        f"📅 <b>Bilan de la semaine</b> : le {s['bilan_jour']}\n"
+        f"🖼 <b>Bandeau sur les photos</b> : {_onoff(s['filigrane'])}\n"
+        f"🔒 <b>SL au BE après TP1</b> : {_onoff(s['be_auto'])}\n"
+        f"🎯 <b>% clôturé par défaut aux TP</b> : {s['tp_pct']} %\n"
+        f"📰 <b>Rappel avant une annonce</b> : {(s['rappel_news'] + ' min') if s['rappel_news'] != '0' else '❌ désactivé'}\n\n"
+        "Touche un bouton pour modifier :")
+
+
+def settings_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardButton
+    return InlineKeyboardMarkup([
+        [b("⭐ Favoris", callback_data="set:ask:favoris"), b("🕒 Fuseau", callback_data="set:menu:fuseau")],
+        [b("📊 Heure du bilan", callback_data="set:ask:bilan_heure"), b("📅 Jour hebdo", callback_data="set:menu:bilan_jour")],
+        [b("🖼 Bandeau photo", callback_data="set:toggle:filigrane"), b("🔒 BE auto", callback_data="set:toggle:be_auto")],
+        [b("🎯 % aux TP", callback_data="set:menu:tp_pct"), b("📰 Rappel news", callback_data="set:menu:rappel_news")],
+        [b("✅ Terminé", callback_data="set:done")],
+    ])
+
+
+SETTING_MENUS = {
+    "fuseau": TZ_CHOICES,
+    "bilan_jour": WEEKDAYS,
+    "tp_pct": ["25", "33", "50", "75", "100"],
+    "rappel_news": ["0", "5", "15", "30", "60"],
+}
+SETTING_PROMPTS = {
+    "favoris": "⭐ Envoie tes actifs favoris (1 à 8), séparés par des virgules.\nEx : <code>XAUUSD, US30, BTCUSD, EURUSD</code>",
+    "bilan_heure": "📊 À quelle heure publier le bilan du jour ? Ex : <code>22:00</code>\n(ou <code>off</code> pour désactiver)",
+    "fuseau": "🕒 Envoie ton fuseau horaire. Ex : <code>Europe/Paris</code>, <code>Africa/Casablanca</code>",
+}
+
+
+def _menu_label(key: str, v: str) -> str:
+    if key == "tp_pct":
+        return f"{v} %"
+    if key == "rappel_news":
+        return "Aucun" if v == "0" else f"{v} min"
+    return v
+
+
+@admin_only
+async def cmd_reglages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(settings_text(get_settings()), parse_mode=ParseMode.HTML, reply_markup=settings_kb())
+
+
+async def _after_change(context: ContextTypes.DEFAULT_TYPE, key: str):
+    apply_settings()
+    if key in ("fuseau", "bilan_heure", "bilan_jour"):
+        schedule_reports(context.application.job_queue)
+
+
+@admin_only
+async def on_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    parts = q.data.split(":", 3)
+    action = parts[1]
+    if action == "done":
+        await q.answer("Réglages enregistrés ✅")
+        await q.edit_message_reply_markup(None)
+        return
+    key = parts[2] if len(parts) > 2 else ""
+    if action == "toggle":
+        save_setting(key, "false" if get_settings()[key] == "true" else "true")
+        await _after_change(context, key)
+    elif action == "set":
+        save_setting(key, parts[3])
+        await _after_change(context, key)
+    elif action == "menu":
+        rows, opts = [], SETTING_MENUS[key]
+        for i in range(0, len(opts), 2 if key == "fuseau" else 3):
+            rows.append([InlineKeyboardButton(_menu_label(key, o), callback_data=f"set:set:{key}:{o}")
+                         for o in opts[i:i + (2 if key == "fuseau" else 3)]])
+        if key == "fuseau":
+            rows.append([InlineKeyboardButton("✍️ Autre fuseau", callback_data="set:ask:fuseau")])
+        rows.append([InlineKeyboardButton("⬅️ Retour", callback_data="set:back")])
+        await q.answer()
+        await q.edit_message_reply_markup(InlineKeyboardMarkup(rows))
+        return
+    elif action == "ask":
+        context.user_data["await"] = ("setting", key)
+        await q.answer()
+        await q.message.reply_text(SETTING_PROMPTS[key], parse_mode=ParseMode.HTML)
+        return
+    await q.answer("✅ Enregistré" if action != "back" else None)
+    await q.edit_message_text(settings_text(get_settings()), parse_mode=ParseMode.HTML, reply_markup=settings_kb())
+
+
+async def setting_typed(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str, txt: str):
+    try:
+        save_setting(key, txt)
+    except ValueError as e:
+        context.user_data["await"] = ("setting", key)
+        await update.message.reply_text(f"❗ {escape(str(e))}\nRéessaie, ou /reglages pour revenir au menu.",
+                                        parse_mode=ParseMode.HTML)
+        return
+    await _after_change(context, key)
+    await update.message.reply_text("✅ Enregistré.\n\n" + settings_text(get_settings()),
+                                    parse_mode=ParseMode.HTML, reply_markup=settings_kb())
 
 
 # ================================================================ démarrage
@@ -1741,6 +2026,7 @@ def main():
         log.warning("ADMIN_IDS vide : envoie /start au robot pour connaître ton identifiant.")
     init_db()
     init_news_table()
+    apply_settings()
     app = Application.builder().token(BOT_TOKEN).post_init(start_api).post_shutdown(stop_api).build()
     private = filters.ChatType.PRIVATE
 
@@ -1750,6 +2036,7 @@ def main():
                       MessageHandler(private & filters.PHOTO & filters.CaptionRegex(QUICK_RE), quick_signal)],
         states={
             PAIR: [CallbackQueryHandler(sig_pair_cb, pattern=r"^pair:"),
+                   CallbackQueryHandler(sig_pair_category, pattern=r"^cat:"),
                    MessageHandler(filters.TEXT & ~filters.COMMAND, sig_pair_text)],
             DIRECTION: [CallbackQueryHandler(sig_direction, pattern=r"^dir:")],
             ORDER_TYPE: [CallbackQueryHandler(sig_order_type, pattern=r"^ot:")],
@@ -1791,6 +2078,8 @@ def main():
     app.add_handler(CommandHandler("cloture", cmd_cloture, filters=private))
     app.add_handler(CommandHandler("ouverts", cmd_ouverts, filters=private))
     app.add_handler(CommandHandler("bilan", cmd_bilan, filters=private))
+    app.add_handler(CommandHandler("reglages", cmd_reglages, filters=private))
+    app.add_handler(CallbackQueryHandler(on_settings_button, pattern=r"^set:"))
     app.add_handler(CallbackQueryHandler(on_update_button, pattern=r"^u:"))
     app.add_handler(CallbackQueryHandler(on_report_button, pattern=r"^rep:"))
     app.add_handler(CallbackQueryHandler(on_api_validation, pattern=r"^api:"))
@@ -1803,17 +2092,7 @@ def main():
     if app.job_queue:
         app.job_queue.run_repeating(job_expire_orders, interval=60, first=10, name="expire_orders")
         app.job_queue.run_repeating(job_news_reminders, interval=60, first=15, name="news_reminders")
-    if DAILY_REPORT_TIME and app.job_queue:
-        h, m = map(int, DAILY_REPORT_TIME.split(":"))
-        app.job_queue.run_daily(job_report, time(h, m, tzinfo=TZ), days=(1, 2, 3, 4, 5), data="jour", name="daily")
-        days = {"dimanche": 0, "lundi": 1, "mardi": 2, "mercredi": 3, "jeudi": 4, "vendredi": 5, "samedi": 6}
-        wd = days.get(WEEKLY_REPORT_DAY, 5)
-        weekly_at = (datetime(2000, 1, 1, h, m) + timedelta(minutes=5)).time()
-        app.job_queue.run_daily(job_report, weekly_at.replace(tzinfo=TZ), days=(wd,), data="semaine", name="weekly")
-        monthly_at = (datetime(2000, 1, 1, h, m) + timedelta(minutes=10)).time()
-        app.job_queue.run_daily(job_report, monthly_at.replace(tzinfo=TZ), data="mois", name="monthly")
-        log.info("Bilans auto : quotidien %s, hebdo le %s, mensuel le dernier jour du mois",
-                 DAILY_REPORT_TIME, WEEKLY_REPORT_DAY)
+    schedule_reports(app.job_queue)
 
     log.info("🤖 Robot démarré — canal %s, admins %s", CHANNEL_ID, ADMIN_IDS)
     try:
