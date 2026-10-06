@@ -219,14 +219,14 @@ class SiteTests(unittest.TestCase):
         import usine
         page = usine.render_site("MaUsineBot").decode()
         self.assertEqual(re.findall(r"\{\{\w+\}\}", page), [])
-        self.assertIn("https://t.me/MaUsineBot?start=site", page)
+        self.assertIn("https://t.me/MaUsineBot?start=creer", page)
         srv = usine.start_site(0)                       # port libre choisi par le système
         try:
             port = srv.server_address[1]
             usine.SITE_STATE.update(bot_username="MaUsineBot", error=None)
             code, body = self._get(port, "/")
             self.assertEqual(code, 200)
-            self.assertIn("https://t.me/MaUsineBot?start=site", body)
+            self.assertIn("https://t.me/MaUsineBot?start=creer", body)
             code, body = self._get(port, "/health")
             self.assertEqual(code, 200)
             self.assertIn('"ok": true', body)
@@ -288,7 +288,142 @@ class LauncherTests(unittest.TestCase):
     def test_vip_service_still_runs_bot(self):
         self.assertEqual(self._which({}), "bot.py")
 
+    def test_bot_py_hands_over_to_factory(self):
+        """Railway lance « python bot.py » sur le service de l'usine : bot.py doit passer la main à usine.py."""
+        import socket
+        import urllib.request
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0))
+            port = sk.getsockname()[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {k: v for k, v in os.environ.items() if k not in ("BOT_TOKEN", "USINE_BOT_TOKEN")}
+            env.update(USINE_BOT_TOKEN="pas-un-jeton", PORT=str(port), DATA_DIR=tmp)
+            p = subprocess.Popen([sys.executable, os.path.join(HERE, "bot.py")], cwd=tmp, env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                for _ in range(100):
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as r:
+                            self.assertEqual(r.status, 200)
+                        break
+                    except OSError:
+                        time.sleep(0.1)
+                else:
+                    self.fail("la page de l'usine n'a jamais répondu")
+            finally:
+                p.kill()
+                p.wait()
+
     def test_factory_service_runs_usine(self):
         self.assertEqual(self._which({"USINE_BOT_TOKEN": "123:abc"}), "usine.py")
 
 
+
+
+class SalesBotMenuTests(unittest.TestCase):
+    """Accueil et boutons du robot de vente (Telegram simulé)."""
+
+    def setUp(self):
+        import usine
+        from unittest.mock import AsyncMock, MagicMock
+        self.usine, self.AsyncMock, self.MagicMock = usine, AsyncMock, MagicMock
+        self.tmp = tempfile.TemporaryDirectory()
+        usine.STORE = ClientStore(os.path.join(self.tmp.name, "usine.db"))
+        usine.SUP = Supervisor(usine.STORE, self.tmp.name, os.path.join(self.tmp.name, "absent.py"))
+        self.ctx = MagicMock()
+        self.ctx.bot_data = {}
+        self.ctx.user_data = {}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _update(self, uid=10, data=None):
+        u = self.MagicMock()
+        u.effective_user.id = uid
+        u.effective_user.first_name = "Momo"
+        msg = u.effective_message
+        msg.reply_text, msg.reply_photo = self.AsyncMock(), self.AsyncMock()
+        msg.reply_photo.return_value.photo = [self.MagicMock(file_id="BANNIERE")]
+        u.message = msg
+        if data:
+            u.callback_query.data = data
+            u.callback_query.answer = self.AsyncMock()
+        else:
+            u.callback_query = None
+        return u
+
+    @staticmethod
+    def _buttons(markup):
+        return [b.callback_data or b.url for row in markup.inline_keyboard for b in row]
+
+    def test_new_visitor_gets_banner_and_create_button(self):
+        import asyncio
+        u = self._update()
+        asyncio.run(self.usine.cmd_start(u, self.ctx))
+        call = u.effective_message.reply_photo.call_args
+        self.assertIn("jours d'essai gratuit", call.kwargs["caption"])
+        self.assertIn("menu:creer", self._buttons(call.kwargs["reply_markup"]))
+        self.assertEqual(self.ctx.bot_data["banner_id"], "BANNIERE")   # réutilisée ensuite
+
+    def test_returning_client_sees_status_and_my_bot(self):
+        import asyncio
+        self.usine.STORE.add(10, TOKEN_A, "alpha_bot", "-1001", "ALPHA", trial_days=7)
+        u = self._update()
+        asyncio.run(self.usine.cmd_start(u, self.ctx))
+        text = u.effective_message.reply_text.call_args_list[0].args[0]
+        self.assertIn("Bon retour Momo", text)
+        self.assertIn("@alpha_bot", text)
+        self.assertIn("menu:mon", self._buttons(u.effective_message.reply_text.call_args_list[0].kwargs["reply_markup"]))
+
+    def test_menu_buttons(self):
+        import asyncio
+        self.usine.STORE.add(10, TOKEN_A, "alpha_bot", "-1001", "ALPHA", trial_days=7)
+        for data, expected in (("menu:aide", "Comment ça marche"), ("menu:support", "Support")):
+            u = self._update(data=data)
+            asyncio.run(self.usine.on_menu(u, self.ctx))
+            u.callback_query.answer.assert_awaited()
+            self.assertIn(expected, u.effective_message.reply_text.call_args.args[0])
+        u = self._update(data="menu:mon")
+        asyncio.run(self.usine.on_menu(u, self.ctx))
+        self.assertIn("https://t.me/alpha_bot", self._buttons(u.effective_message.reply_text.call_args.kwargs["reply_markup"]))
+
+    def test_create_from_button_starts_signup(self):
+        import asyncio
+        u = self._update(uid=99, data="menu:creer")
+        state = asyncio.run(self.usine.creer_start(u, self.ctx))
+        self.assertEqual(state, self.usine.C_TOKEN)
+        self.assertIn("Étape 1/3", u.effective_message.reply_text.call_args.args[0])
+
+
+class DeepLinkTests(unittest.TestCase):
+    def _update(self, text, bot):
+        from datetime import datetime, timezone
+        from telegram import Chat, Message, MessageEntity, Update, User
+        user = User(10, "Momo", False)
+        msg = Message(1, datetime.now(timezone.utc), Chat(10, "private"), from_user=user, text=text,
+                      entities=[MessageEntity("bot_command", 0, len(text.split()[0]))])
+        msg.set_bot(bot)
+        upd = Update(1, message=msg)
+        upd.set_bot(bot)
+        return upd
+
+    def test_start_creer_from_sales_page_opens_signup(self):
+        from telegram.ext import ConversationHandler
+        import usine
+        usine.USINE_TOKEN = "1234567:" + "x" * 35
+        app = usine.build_app()
+        from telegram import User
+        app.bot._bot_user = User(1, "Usine", True, username="MaUsineBot")   # comme après la connexion
+        conv = next(h for h in app.handlers[0] if isinstance(h, ConversationHandler))
+        self.assertTrue(conv.check_update(self._update("/start creer", app.bot)))   # bouton de la page → inscription
+        self.assertFalse(conv.check_update(self._update("/start", app.bot)))         # /start simple → accueil
+
+    def test_menu_opens_sales_page_inside_telegram(self):
+        import usine
+        old = usine.SITE_URL
+        try:
+            usine.SITE_URL = "https://exemple.up.railway.app"
+            btn = [b for row in usine.main_menu_kb().inline_keyboard for b in row if b.web_app]
+            self.assertEqual(btn[0].web_app.url, "https://exemple.up.railway.app")
+        finally:
+            usine.SITE_URL = old
