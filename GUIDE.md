@@ -8,7 +8,7 @@
 4. Le signal part dans le canal VIP avec ta photo (bandeau doré « ANONYMETRADER VIP » ajouté en bas) et le modèle.
 5. Tu reçois des **boutons de suivi** : `🎯 TP1` `🎯 TP2` `🎯 TP3` `🔒 SL → BE` `❌ SL / BE touché` `✋ Clôture manuelle`.
    Chaque bouton publie une mise à jour **en réponse au signal d'origine** dans le canal.
-6. Le soir, le robot publie tout seul le **bilan du jour** (lun→ven), et le vendredi le **bilan de la semaine**.
+6. Le soir, le robot publie tout seul le **bilan du jour** (lun→ven), le vendredi le **bilan de la semaine**, et le dernier jour du mois le **bilan du mois**.
 
 ### Commandes
 
@@ -17,13 +17,36 @@
 | `/signal` | Nouveau signal |
 | `/ouverts` | Signaux en cours + leurs boutons |
 | `/cloture 12 2655.3` | Clôturer le signal #12 à un prix précis |
-| `/bilan` · `/bilan semaine` · `/bilan mois` | Aperçu du bilan + bouton « Publier » |
+| `/bilan` · `/bilan hier` | Bilan du jour / d'hier (aperçu + bouton « Publier ») |
+| `/bilan semaine` · `/bilan semaine derniere` | Semaine en cours / précédente |
+| `/bilan mois` · `/bilan mois dernier` · `/bilan septembre` · `/bilan 09/2026` | Bilan d'un mois |
+| `/bilan 01/09 15/09` · `/bilan 01/09/2026 30/09/2026` | Période au choix |
+| `/bilan annee` · `/bilan 2026` | Bilan de l'année |
+| `/news` | Annonce économique (NFP, CPI, FOMC…) avec rappel et chiffre réel |
 | `/accueil` | Publie et épingle le message d'accueil (règles + avertissement) |
 | `/verifier` | Vérifie que le robot peut publier dans le canal |
 | `/id` | Ton identifiant Telegram |
 | `/annuler` | Annule la saisie en cours |
 
-**Règle des résultats :** si un TP a été touché puis le prix revient, le bouton `❌ SL / BE touché` compte le trade comme gagné au dernier TP (le reste de la position est considéré fermé au BE, comme le dit le modèle). Sans TP touché : perte si le SL n'était pas au BE, 0 sinon.
+### Prises de profits partielles
+
+Quand tu appuies sur **🎯 TP1** (ou TP2…), le robot te demande **quel % de la position clôturer** : `25 %` `33 %` `50 %` `75 %` `Tout le reste` ou `Autre %` (tu tapes le chiffre).
+
+Exemple sur l'or, BUY 2650, SL 2645, TP1 2655 / TP2 2660 / TP3 2670 :
+
+| Étape | Message publié | Total |
+|---|---|---|
+| TP1, 50 % | TP1 +50 pips · 50 % fermés → +25 pips sécurisés · SL au BE · on continue vers TP2 | +25 pips |
+| TP2, 30 % | TP2 +100 pips · 30 % fermés → +30 pips · on continue vers TP3 avec 20 % | +55 pips |
+| BE touché | Les 20 % restants sortent au BE (0 pip) | **+55 pips** |
+
+- Les résultats sont **pondérés** : chaque morceau compte pour sa part de la position.
+- Au **dernier TP**, le reste est fermé automatiquement.
+- Après une clôture partielle au TP1, le SL passe **automatiquement au BE** (désactivable : `AUTO_BE_AFTER_TP1=false`). Sans BE, le reste sorti au SL compte en perte.
+- `/cloture 12 2685` ferme **ce qu'il reste** au prix donné et calcule le total.
+
+Les bilans sont exprimés en **R** (1R = le risque pris jusqu'au SL) **et en pips par actif**. Ils indiquent aussi le profit factor, le meilleur et le pire trade, et le nombre d'ordres annulés.
+
 ### Ordres en attente (LIMIT / STOP)
 
 | Type | BUY | SELL |
@@ -38,7 +61,14 @@
 - À l'heure limite, le robot **annule tout seul** l'ordre et prévient le canal.
 - Un ordre annulé ou expiré **ne compte pas** dans les bilans.
 
-Les bilans sont exprimés en **R** (1R = le risque pris jusqu'au SL). Comme ça on peut additionner l'or et le BTC sans mélanger des pips qui n'ont pas la même valeur.
+Le R permet d'additionner l'or et le BTC sans mélanger des pips qui n'ont pas la même valeur.
+
+### Annonces économiques (`/news`)
+
+1. `/news` → choisis l'événement (NFP, CPI, FOMC, Powell, PPI, chômage, PIB, PMI, BCE) ou tape son nom.
+2. Heure (`14:30` ou `10/10 14:30`), impact (🔴 fort / 🟠 moyen / 🟡 faible), devises concernées, prévision / précédent (`180K / 175K`), ton conseil (ou le conseil standard).
+3. Aperçu → **Publier**. Le robot publie un **rappel 15 min avant** (réglable : `NEWS_REMINDER_MIN`).
+4. Après la sortie du chiffre, bouton **📊 Publier le chiffre réel** → tape `210K Emploi plus fort que prévu`. Le robot compare à la prévision (« au-dessus des attentes »).
 
 ---
 
@@ -173,7 +203,7 @@ XAUUSD SELL LIMIT 2670 SL 2676 TP 2660 2650
 ```json
 { "ref": "ia-2026-09-23-001", "event": "tp1" }
 ```
-`event` : `activate` (ordre en attente déclenché), `cancel` (ordre en attente annulé), `tp1` … `tp5`, `be` (SL au point d'entrée), `sl` (SL/BE touché), `close` (+ `"price": 2663.2`).
+`event` : `activate` (ordre en attente déclenché), `cancel` (ordre en attente annulé), `tp1` … `tp5` (+ `"close_pct": 50` = % à fermer ; sinon `TP_DEFAULT_PCT`, et tout le reste au dernier TP), `be` (SL au point d'entrée), `sl` (SL/BE touché), `close` (+ `"price": 2663.2`).
 On peut utiliser `"id": 12` (numéro du signal) au lieu de `ref`.
 
 ## Réponses
