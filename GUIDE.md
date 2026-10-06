@@ -45,6 +45,7 @@ Les virgules décimales (`2650,5`, `1,0850`) sont acceptées. Le robot vérifie 
 | `/bilan 01/09 15/09` · `/bilan 01/09/2026 30/09/2026` | Période au choix |
 | `/bilan annee` · `/bilan 2026` | Bilan de l'année |
 | `/news` | Annonce économique (NFP, CPI, FOMC…) avec rappel et chiffre réel |
+| `/reglages` | Actifs favoris, fuseau horaire, heure du bilan, jour du bilan hebdo, bandeau photo, BE auto, % aux TP, rappel news |
 | `/accueil` | Publie et épingle le message d'accueil (règles + avertissement) |
 | `/verifier` | Vérifie que le robot peut publier dans le canal |
 | `/id` | Ton identifiant Telegram |

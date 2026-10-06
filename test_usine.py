@@ -202,3 +202,32 @@ class RealBotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SiteTests(unittest.TestCase):
+    def test_page_is_filled_and_served(self):
+        import asyncio
+        import re
+        import usine
+        page = usine.render_site("MaUsineBot").decode()
+        self.assertEqual(re.findall(r"\{\{\w+\}\}", page), [])
+        self.assertIn("https://t.me/MaUsineBot?start=site", page)
+
+        async def go():
+            usine.PORT = 0
+            app = type("A", (), {"bot_data": {}})()
+            await usine.start_site(app, "MaUsineBot")
+            port = app.bot_data["site"].sockets[0].getsockname()[1]
+            out = {}
+            for path in ("/", "/health", "/nope"):
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                w.write(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+                out[path] = (await r.read()).decode()
+                w.close()
+            app.bot_data["site"].close()
+            return out
+        out = asyncio.run(go())
+        self.assertTrue(out["/"].startswith("HTTP/1.1 200"))
+        self.assertIn("Créer mon robot", out["/"])
+        self.assertIn('"ok": true', out["/health"])
+        self.assertTrue(out["/nope"].startswith("HTTP/1.1 404"))

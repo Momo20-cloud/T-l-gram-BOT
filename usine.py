@@ -12,6 +12,9 @@ Essai gratuit, puis abonnement payé en Telegram Stars (ou prolongé à la main)
 bot.py n'est pas modifié : ton canal VIP continue de tourner sur son propre service.
 Lancement : python usine.py   (variables : voir .env.usine.example)
 """
+import asyncio
+import html
+import json
 import logging
 import os
 import re
@@ -44,6 +47,9 @@ REMIND_DAYS = int(os.getenv("REMIND_DAYS", "3") or 3)
 MAX_BOTS_PER_USER = int(os.getenv("MAX_BOTS_PER_USER", "1") or 1)
 OPEN_SIGNUP = os.getenv("OPEN_SIGNUP", "true").lower() in ("1", "true", "oui", "yes")
 SUPPORT_CONTACT = os.getenv("SUPPORT_CONTACT", "").strip()
+SITE_NAME = os.getenv("SITE_NAME", "").strip() or "Anonymetrader Signals"
+PORT = int(os.getenv("PORT", "0") or 0)          # Railway le fournit : la page de vente est servie dessus
+SITE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site", "index.html")
 CLIENT_SCRIPT = os.getenv("CLIENT_SCRIPT") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.py")
 
 TOKEN_RE = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
@@ -412,8 +418,8 @@ async def creer_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def creer_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     brand = re.sub(r"\s+", " ", update.message.text or "").strip()
-    if not 2 <= len(brand) <= 40:
-        await update.message.reply_text("Entre 2 et 40 caractères, s'il te plaît.")
+    if not 2 <= len(brand) <= 40 or re.search(r"[<>&]", brand):
+        await update.message.reply_text("Entre 2 et 40 caractères, sans < > &, s'il te plaît.")
         return C_BRAND
     d = context.user_data
     if STORE.token_exists(d["token"]):
@@ -544,12 +550,72 @@ async def job_supervise(context: ContextTypes.DEFAULT_TYPE):
             STORE.mark_reminded(c["id"])
 
 
+# ================================================================ page de vente (site web)
+def render_site(bot_username: str | None) -> bytes:
+    with open(SITE_FILE, encoding="utf-8") as f:
+        page = f.read()
+    link = f"https://t.me/{bot_username}?start=site" if bot_username else "#"
+    support = SUPPORT_CONTACT or (f"@{bot_username}" if bot_username else "")
+    values = {"SITE_NAME": SITE_NAME, "BOT_LINK": link, "TRIAL_DAYS": TRIAL_DAYS, "SUB_DAYS": SUB_DAYS,
+              "PRICE_STARS_FMT": f"{PRICE_STARS:,}".replace(",", "\u202f"), "SUPPORT": support}
+    for k, v in values.items():
+        page = page.replace("{{" + k + "}}", html.escape(str(v), quote=True))
+    return page.encode("utf-8")
+
+
+def site_response(path: str, page: bytes) -> tuple[str, str, bytes]:
+    """(statut, type, contenu) pour un chemin donné."""
+    path = path.split("?", 1)[0]
+    if path in ("/", "/index.html"):
+        return "200 OK", "text/html; charset=utf-8", page
+    if path == "/health":
+        body = {"ok": True, "clients_en_marche": len(SUP.procs) if SUP else 0}
+        return "200 OK", "application/json", json.dumps(body).encode()
+    if path == "/robots.txt":
+        return "200 OK", "text/plain", b"User-agent: *\nAllow: /\n"
+    return "404 Not Found", "text/plain; charset=utf-8", "Page introuvable".encode()
+
+
+async def start_site(app: Application, bot_username: str | None):
+    page = render_site(bot_username)
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
+            line = (await asyncio.wait_for(reader.readline(), 10)).decode("latin-1")
+            while (await asyncio.wait_for(reader.readline(), 10)) not in (b"\r\n", b"\n", b""):
+                pass
+            parts = line.split()
+            method, path = (parts[0], parts[1]) if len(parts) >= 2 else ("GET", "/")
+            status, ctype, body = site_response(path, page)
+            head = (f"HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {len(body)}\r\n"
+                    "Cache-Control: public, max-age=300\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n")
+            writer.write(head.encode() + (b"" if method == "HEAD" else body))
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+
+    app.bot_data["site"] = await asyncio.start_server(handle, "0.0.0.0", PORT)
+    log.info("🌐 Page de vente en ligne sur le port %s", PORT)
+
+
 async def post_init(app: Application):
+    try:
+        await app.bot.set_my_commands([("creer", "Créer mon robot"), ("monrobot", "Mon robot et mon abonnement"),
+                                       ("abonner", "Prolonger mon abonnement"), ("paysupport", "Aide paiement")])
+    except TelegramError as e:
+        log.warning("Menu des commandes non mis à jour : %s", e)
+    if PORT:
+        await start_site(app, app.bot.username)
     SUP.sync()
     log.info("🏭 Usine démarrée — %s robots clients en marche", len(SUP.procs))
 
 
 async def post_shutdown(app: Application):
+    srv = app.bot_data.get("site")
+    if srv:
+        srv.close()
     SUP.stop_all()
 
 
