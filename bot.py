@@ -6,6 +6,7 @@ te montre un aperçu, puis publie le signal dans ton canal VIP
 avec la photo et le modèle défini dans templates.py.
 """
 import hmac
+from templates import escape
 import io
 import json
 import logging
@@ -103,6 +104,10 @@ def init_db():
             c.execute("ALTER TABLE signals ADD COLUMN order_type TEXT DEFAULT 'MARKET'")
         if "expires_at" not in cols:
             c.execute("ALTER TABLE signals ADD COLUMN expires_at TEXT")
+        if "closed_pct" not in cols:
+            c.execute("ALTER TABLE signals ADD COLUMN closed_pct REAL DEFAULT 0")
+        if "realized_pips" not in cols:
+            c.execute("ALTER TABLE signals ADD COLUMN realized_pips REAL DEFAULT 0")
 
 
 def get_signal(sig_id: int):
@@ -250,11 +255,17 @@ HELP = """🤖 <b>Robot ANONYMETRADER VIP</b>
 <b>Signaux</b>
 /signal — créer et publier un nouveau signal
 /ouverts — signaux en cours + boutons de suivi
+🎯 Au TP, le robot te demande quel % clôturer (25 %, 50 %…)
 /cloture <code>ID PRIX</code> — clôture manuelle (ex : <code>/cloture 12 2655.3</code>)
 
-<b>Bilans</b>
-/bilan — bilan du jour (aperçu + bouton publier)
-/bilan semaine · /bilan mois
+<b>Bilans</b> (aperçu + bouton publier)
+/bilan — aujourd'hui · /bilan hier
+/bilan semaine · /bilan mois · /bilan mois dernier
+/bilan septembre · /bilan 09/2026 · /bilan annee
+/bilan <code>01/09 15/09</code> — période au choix
+
+<b>Annonces économiques</b>
+/news — annonce (NFP, CPI, FOMC…) + rappel avant + chiffre réel
 
 <b>Canal</b>
 /accueil — publie et épingle le message d'accueil
@@ -574,6 +585,14 @@ async def sig_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ================================================================ suivi TP / SL / BE
+AUTO_BE_AFTER_TP1 = os.getenv("AUTO_BE_AFTER_TP1", "true").lower() in ("1", "true", "oui", "yes")
+TP_DEFAULT_PCT = float(os.getenv("TP_DEFAULT_PCT", "50") or 50)   # % clôturé par défaut (API) aux TP intermédiaires
+
+
+def _remaining(row) -> float:
+    return round(100 - float(row["closed_pct"] or 0), 2)
+
+
 def control_kb(row) -> InlineKeyboardMarkup | None:
     if row["status"] == "PENDING":
         sid = row["id"]
@@ -594,13 +613,53 @@ def control_kb(row) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(rows)
 
 
+def pct_kb(row, n: int) -> InlineKeyboardMarkup:
+    """Choix du % de la position à clôturer au TPn."""
+    sid, rem = row["id"], _remaining(row)
+    opts = [p for p in (25, 33, 50, 75) if p < rem]
+    btns = [InlineKeyboardButton(f"{p} %", callback_data=f"p:{sid}:{n}:{p}") for p in opts]
+    rows = [btns[i:i + 4] for i in range(0, len(btns), 4)]
+    rows.append([InlineKeyboardButton(f"💯 Tout le reste ({rem:g} %)", callback_data=f"p:{sid}:{n}:{rem:g}")])
+    rows.append([InlineKeyboardButton("✏️ Autre %", callback_data=f"p:{sid}:{n}:autre"),
+                 InlineKeyboardButton("↩️ Retour", callback_data=f"p:{sid}:{n}:retour")])
+    return InlineKeyboardMarkup(rows)
+
+
+def status_line(row) -> str:
+    """Résumé d'un trade pour le panneau de contrôle admin."""
+    r = row
+    head = f"📊 #{r['id']} {r['pair']} {r['direction']}"
+    if (r["order_type"] or "MARKET") != "MARKET":
+        head += f" {r['order_type']}"
+    head += f" @ {r['entry_text']}"
+    if r["status"] == "PENDING":
+        return head + " · ⏳ en attente"
+    if r["status"] != "OPEN":
+        res = "" if r["result_pips"] is None else f" → {r['result_pips']:+g} pips"
+        return f"🏁 Signal #{r['id']} terminé — {r['outcome']}{res}"
+    parts = [head]
+    if r["tp_hit"]:
+        parts.append(f"TP{r['tp_hit']} ✅")
+    if r["closed_pct"]:
+        parts.append(f"{r['closed_pct']:g} % fermé ({(r['realized_pips'] or 0):+g} pips sécurisés)")
+        parts.append(f"reste {_remaining(r):g} %")
+    if r["be"]:
+        parts.append("BE 🔒")
+    return " · ".join(parts)
+
+
 async def _reply_in_channel(bot, row, text):
     rp = ReplyParameters(message_id=row["msg_id"], allow_sending_without_reply=True) if row["msg_id"] else None
     await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_parameters=rp)
 
 
-async def apply_action(bot, row, action: str, price: float | None = None, price_text: str | None = None) -> str:
-    """Applique tp1..tp5 / be / sl / close à un signal ouvert et publie la mise à jour. Renvoie un résumé."""
+async def apply_action(bot, row, action: str, price: float | None = None, price_text: str | None = None,
+                       pct: float | None = None) -> str:
+    """Applique activate/cancel/expire, tp1..tp5 (+ % clôturé), be, sl, close. Publie et renvoie un résumé.
+
+    Les résultats sont « pondérés » : chaque morceau fermé compte pour sa part de la position.
+    Ex. 50 % fermés au TP1 (+100 pips) puis le reste au BE  →  +50 pips sur la position complète.
+    """
     s = dict(row)
     if s["status"] == "PENDING":
         if action == "activate":
@@ -616,8 +675,11 @@ async def apply_action(bot, row, action: str, price: float | None = None, price_
         raise ValueError(f"le signal #{s['id']} est déjà clôturé")
     if action in ("activate", "cancel", "expire"):
         raise ValueError("ce trade est déjà actif (utilise SL, BE ou clôture)")
-    tps = json.loads(s["tps"])
+
+    tps, tps_text = json.loads(s["tps"]), json.loads(s["tps_text"])
     pair, d, entry = s["pair"], s["direction"], s["entry"]
+    remaining = _remaining(row)
+    realized = float(s["realized_pips"] or 0)
 
     if action.startswith("tp"):
         n = int(action[2:] or 0)
@@ -625,14 +687,31 @@ async def apply_action(bot, row, action: str, price: float | None = None, price_
             raise ValueError(f"ce signal n'a que {len(tps)} TP")
         if n <= s["tp_hit"]:
             raise ValueError(f"TP{n} déjà annoncé")
-        pips = calc_pips(pair, d, entry, tps[n - 1])
         final = n == len(tps)
-        fields = {"tp_hit": n}
-        if final:
-            fields.update(status="CLOSED", outcome=f"TP{n}", result_pips=pips, closed_at=utc_now_str())
+        if final or pct is None and remaining <= TP_DEFAULT_PCT:
+            pct = remaining
+        elif pct is None:
+            pct = TP_DEFAULT_PCT
+        pct = round(max(1.0, min(float(pct), remaining)), 2)
+        tp_pips = calc_pips(pair, d, entry, tps[n - 1])
+        gained = round(tp_pips * pct / 100, 1)
+        realized = round(realized + gained, 1)
+        closed = round(100 - remaining + pct, 2)
+        fully = closed >= 99.99
+        fields = {"tp_hit": n, "closed_pct": min(closed, 100), "realized_pips": realized}
+        be_now = False
+        if not fully and AUTO_BE_AFTER_TP1 and not s["be"]:
+            fields["be"], be_now = 1, True
+        if fully:
+            fields.update(status="CLOSED", outcome=f"TP{n}", result_pips=realized, closed_at=utc_now_str())
         update_signal(s["id"], **fields)
-        await _reply_in_channel(bot, row, T.tp_hit(s, n, pips, final))
-        return f"TP{n} publié ✅"
+        nxt = None
+        if not fully and n < len(tps):
+            nxt = {"n": n + 1, "text": tps_text[n], "pips": calc_pips(pair, d, entry, tps[n])}
+        await _reply_in_channel(bot, row, T.tp_hit(
+            s, n=n, pips=tp_pips, pct=pct, gained=gained, total=realized,
+            remaining=round(100 - closed, 2), next_tp=nxt, be_now=be_now, closed=fully))
+        return f"TP{n} : {pct:g} % fermé ({gained:+g} pips)" + (" — trade clôturé" if fully else "")
 
     if action == "be":
         if s["be"]:
@@ -642,26 +721,29 @@ async def apply_action(bot, row, action: str, price: float | None = None, price_
         return "BE publié 🔒"
 
     if action == "sl":
+        exit_pips = 0.0 if s["be"] else calc_pips(pair, d, entry, s["sl"])
+        rest = round(exit_pips * remaining / 100, 1)
+        total = round(realized + rest, 1)
         if s["tp_hit"] > 0:
-            pips = calc_pips(pair, d, entry, tps[s["tp_hit"] - 1])
-            outcome, text = f"TP{s['tp_hit']}", T.closed_at_be_after_tp(s, s["tp_hit"], pips)
+            outcome = f"TP{s['tp_hit']}+{'BE' if s['be'] else 'SL'}"
+            text = T.closed_after_tp(s, s["tp_hit"], remaining, bool(s["be"]), rest, total)
         elif s["be"]:
-            pips, outcome, text = 0.0, "BE", T.closed_at_be(s)
+            outcome, text = "BE", T.closed_at_be(s)
         else:
-            pips = calc_pips(pair, d, entry, s["sl"])
-            outcome, text = "SL", T.sl_hit(s, pips)
-        update_signal(s["id"], status="CLOSED", outcome=outcome, result_pips=pips, closed_at=utc_now_str())
+            outcome, text = "SL", T.sl_hit(s, total)
+        update_signal(s["id"], status="CLOSED", outcome=outcome, result_pips=total, closed_at=utc_now_str())
         await _reply_in_channel(bot, row, text)
-        return "Clôture publiée"
+        return f"Clôture publiée ({total:+g} pips)"
 
     if action == "close":
         if price is None:
             raise ValueError("prix de clôture manquant")
         price_text = price_text or fmt_num(price)
-        pips = calc_pips(pair, d, entry, price)
-        update_signal(s["id"], status="CLOSED", outcome="Manuel", result_pips=pips, closed_at=utc_now_str())
-        await _reply_in_channel(bot, row, T.manual_close(s, price_text, pips))
-        return f"Clôturé à {price_text} ({pips:+g} pips)"
+        px_pips = calc_pips(pair, d, entry, price)
+        total = round(realized + px_pips * remaining / 100, 1)
+        update_signal(s["id"], status="CLOSED", outcome="Manuel", result_pips=total, closed_at=utc_now_str())
+        await _reply_in_channel(bot, row, T.manual_close(s, price_text, px_pips, remaining, total))
+        return f"Clôturé à {price_text} ({px_pips:+g} pips sur {remaining:g} %, total {total:+g} pips)"
 
     raise ValueError(f"action inconnue : {action}")
 
@@ -679,20 +761,82 @@ async def on_update_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         await q.message.reply_text(f"Envoie : <code>/cloture {sid} PRIX</code>", parse_mode=ParseMode.HTML)
         return
+    if action.startswith("tp") and row["status"] == "OPEN":
+        n = int(action[2:])
+        if n < len(json.loads(row["tps"])) and _remaining(row) > 0:
+            await q.answer()
+            await q.edit_message_text(
+                f"{status_line(row)}\n\n🎯 <b>TP{n} atteint</b> — quel pourcentage de la position clôturer ?",
+                parse_mode=ParseMode.HTML, reply_markup=pct_kb(row, n))
+            return
     try:
         await q.answer(await apply_action(context.bot, row, action))
     except ValueError as e:
         await q.answer(str(e), show_alert=True)
+    await _refresh_panel(q, int(sid))
 
-    new_row = get_signal(int(sid))
+
+async def _refresh_panel(q, sid: int):
+    new_row = get_signal(sid)
     try:
-        if new_row["status"] in ("OPEN", "PENDING"):
-            await q.edit_message_reply_markup(control_kb(new_row))
-        else:
-            res = "" if new_row["result_pips"] is None else f" ({new_row['result_pips']:+g} pips)"
-            await q.edit_message_text(f"🏁 Signal #{sid} terminé — {new_row['outcome']}{res}")
+        await q.edit_message_text(status_line(new_row), reply_markup=control_kb(new_row))
     except Exception:
         pass
+
+
+@admin_only
+async def on_pct_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    _, sid, n, choice = q.data.split(":")
+    row = get_signal(int(sid))
+    if not row or row["status"] != "OPEN":
+        await q.answer("Ce signal n'est plus actif.", show_alert=True)
+        return
+    if choice == "retour":
+        await q.answer()
+        await _refresh_panel(q, int(sid))
+        return
+    if choice == "autre":
+        await q.answer()
+        context.user_data["await"] = ("pct", int(sid), int(n))
+        await q.edit_message_text(
+            f"{status_line(row)}\n\n✏️ Tape le pourcentage à clôturer au TP{n} "
+            f"(entre 1 et {_remaining(row):g}), ex : <code>40</code>", parse_mode=ParseMode.HTML)
+        return
+    try:
+        await q.answer(await apply_action(context.bot, row, f"tp{n}", pct=float(choice)))
+    except ValueError as e:
+        await q.answer(str(e), show_alert=True)
+    await _refresh_panel(q, int(sid))
+
+
+@admin_only
+async def on_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Réponses tapées hors formulaire : % personnalisé, chiffre réel d'une annonce éco."""
+    wait = context.user_data.pop("await", None)
+    if not wait:
+        await update.message.reply_text("Tape /aide pour voir les commandes.")
+        return
+    txt = update.message.text.strip()
+    if wait[0] == "pct":
+        _, sid, n = wait
+        row = get_signal(sid)
+        nums = parse_nums(txt)
+        if not row or row["status"] != "OPEN":
+            await update.message.reply_text("Ce signal n'est plus actif.")
+            return
+        if len(nums) != 1 or not 0 < nums[0][1] <= _remaining(row):
+            context.user_data["await"] = wait
+            await update.message.reply_text(f"❗ Tape un nombre entre 1 et {_remaining(row):g}.")
+            return
+        try:
+            summary = await apply_action(context.bot, row, f"tp{n}", pct=nums[0][1])
+        except ValueError as e:
+            summary = f"❗ {e}"
+        new_row = get_signal(sid)
+        await update.message.reply_text(f"{summary}\n\n{status_line(new_row)}", reply_markup=control_kb(new_row))
+    elif wait[0] == "news_result":
+        await news_publish_result(update, context, wait[1], txt)
 
 
 @admin_only
@@ -718,71 +862,192 @@ async def cmd_ouverts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Aucun signal en cours.")
         return
     for r in rows:
-        extra = (f" · TP{r['tp_hit']} ✅" if r["tp_hit"] else "") + (" · BE 🔒" if r["be"] else "")
-        ot = r["order_type"] or "MARKET"
-        kind = "" if ot == "MARKET" else f" {ot}"
-        state = " · ⏳ en attente" if r["status"] == "PENDING" else ""
-        await update.message.reply_text(
-            f"📊 #{r['id']} {r['pair']} {r['direction']}{kind} @ {r['entry_text']}{state}{extra}",
-            reply_markup=control_kb(r))
+        await update.message.reply_text(status_line(r), reply_markup=control_kb(r))
 
 
 # ================================================================ bilans
-def period_bounds(period: str):
-    now = datetime.now(TZ)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    if period == "semaine":
-        start -= timedelta(days=start.weekday())
-        label = f"du {start:%d/%m} au {now:%d/%m/%Y}"
-    elif period == "mois":
-        start = start.replace(day=1)
-        label = f"{now:%m/%Y}"
+MONTHS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+             "septembre", "octobre", "novembre", "décembre"]
+_MONTH_KEYS = {m.replace("é", "e").replace("û", "u"): i + 1 for i, m in enumerate(MONTHS_FR)}
+
+BILAN_HELP = (
+    "Exemples :\n"
+    "<code>/bilan</code> — aujourd'hui · <code>/bilan hier</code>\n"
+    "<code>/bilan semaine</code> · <code>/bilan semaine derniere</code>\n"
+    "<code>/bilan mois</code> · <code>/bilan mois dernier</code>\n"
+    "<code>/bilan septembre</code> · <code>/bilan 09/2026</code>\n"
+    "<code>/bilan 01/09 15/09</code> — période au choix\n"
+    "<code>/bilan 01/09/2026 30/09/2026</code> · <code>/bilan annee</code>"
+)
+
+
+def _norm(t: str) -> str:
+    return t.lower().replace("é", "e").replace("è", "e").replace("ê", "e").replace("û", "u").replace("'", "")
+
+
+def _month_range(y: int, m: int):
+    from datetime import date
+    first = date(y, m, 1)
+    nxt = date(y + (m == 12), m % 12 + 1, 1)
+    return first, nxt - timedelta(days=1)
+
+
+def _parse_day(tok: str, default_year: int):
+    from datetime import date
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", tok)
+    if m:
+        y, mo, d = map(int, m.groups())
     else:
-        label = f"{now:%d/%m/%Y}"
-    to_utc = lambda dt: dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    return to_utc(start), to_utc(now + timedelta(seconds=1)), label
+        m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?", tok)
+        if not m:
+            return None
+        d, mo = int(m.group(1)), int(m.group(2))
+        y = int(m.group(3)) if m.group(3) else default_year
+        y += 2000 if y < 100 else 0
+    try:
+        return date(y, mo, d)
+    except ValueError:
+        return None
 
 
-def compute_report(period: str):
-    start, end, label = period_bounds(period)
+def resolve_period(args: list[str]):
+    """Renvoie (type, date_début, date_fin incluse, libellé) ou None si la demande est illisible."""
+    today = datetime.now(TZ).date()
+    words = [_norm(a) for a in args if a.strip()]
+    joined = " ".join(words)
+
+    if not words or joined in ("jour", "aujourdhui", "today"):
+        return "jour", today, today, f"{today:%d/%m/%Y}"
+    if joined == "hier":
+        d = today - timedelta(days=1)
+        return "jour", d, d, f"{d:%d/%m/%Y}"
+    if joined == "semaine":
+        start = today - timedelta(days=today.weekday())
+        return "semaine", start, start + timedelta(days=6), f"du {start:%d/%m} au {start + timedelta(days=6):%d/%m/%Y}"
+    if joined in ("semaine derniere", "semaine-derniere", "semaine passee", "semaine precedente"):
+        start = today - timedelta(days=today.weekday() + 7)
+        end = start + timedelta(days=6)
+        return "semaine", start, end, f"du {start:%d/%m} au {end:%d/%m/%Y}"
+    if joined == "mois":
+        a, b = _month_range(today.year, today.month)
+        return "mois", a, b, f"{MONTHS_FR[a.month - 1].capitalize()} {a.year}"
+    if joined in ("mois dernier", "mois-dernier", "mois passe", "mois precedent"):
+        y, m = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+        a, b = _month_range(y, m)
+        return "mois", a, b, f"{MONTHS_FR[m - 1].capitalize()} {y}"
+    if joined in ("annee", "an", "year"):
+        from datetime import date
+        a = date(today.year, 1, 1)
+        return "annee", a, date(today.year, 12, 31), f"Année {today.year}"
+    if re.fullmatch(r"\d{4}", joined):
+        from datetime import date
+        y = int(joined)
+        return "annee", date(y, 1, 1), date(y, 12, 31), f"Année {y}"
+
+    # Mois : "septembre", "septembre 2026", "09/2026", "2026-09"
+    m = re.fullmatch(r"([a-z]+)(?: (\d{4}))?", joined)
+    if m and m.group(1) in _MONTH_KEYS:
+        mo = _MONTH_KEYS[m.group(1)]
+        y = int(m.group(2)) if m.group(2) else (today.year if mo <= today.month else today.year - 1)
+        a, b = _month_range(y, mo)
+        return "mois", a, b, f"{MONTHS_FR[mo - 1].capitalize()} {y}"
+    m = re.fullmatch(r"(\d{1,2})[/-](\d{4})|(\d{4})-(\d{1,2})", joined)
+    if m:
+        mo, y = (int(m.group(1)), int(m.group(2))) if m.group(1) else (int(m.group(4)), int(m.group(3)))
+        if 1 <= mo <= 12:
+            a, b = _month_range(y, mo)
+            return "mois", a, b, f"{MONTHS_FR[mo - 1].capitalize()} {y}"
+
+    # Dates : "01/09" ou "01/09 15/09" (avec "au" / "-" acceptés entre les deux)
+    toks = [w for w in re.split(r"\s+-\s+|\s+|\s*(?:au|a|->)\s*", joined) if w]
+    if 1 <= len(toks) <= 2:
+        days = [_parse_day(t, today.year) for t in toks]
+        if all(days):
+            a, b = days[0], days[-1]
+            if b < a:
+                a, b = b, a
+            label = f"{a:%d/%m/%Y}" if a == b else f"du {a:%d/%m/%Y} au {b:%d/%m/%Y}"
+            return ("jour" if a == b else "periode"), a, b, label
+    return None
+
+
+def compute_report(kind: str, start_day, end_day, label: str):
+    to_utc = lambda d: datetime.combine(d, time(0, 0), tzinfo=TZ).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    start, end = to_utc(start_day), to_utc(end_day + timedelta(days=1))
     with db() as c:
         trades = [dict(r) for r in c.execute(
             "SELECT * FROM signals WHERE status='CLOSED' AND closed_at>=? AND closed_at<? ORDER BY closed_at",
             (start, end)).fetchall()]
+        cancelled = c.execute(
+            "SELECT COUNT(*) FROM signals WHERE status='CANCELLED' AND closed_at>=? AND closed_at<?",
+            (start, end)).fetchone()[0]
     if not trades:
         return None
+    assets: dict[str, dict] = {}
     for t in trades:  # résultat en R (multiple du risque) : comparable entre actifs
         risk = abs(calc_pips(t["pair"], t["direction"], t["entry"], t["sl"])) or 1
         t["r"] = round(t["result_pips"] / risk, 2)
+        a = assets.setdefault(t["pair"], {"pair": t["pair"], "n": 0, "pips": 0.0, "r": 0.0})
+        a["n"] += 1
+        a["pips"] = round(a["pips"] + t["result_pips"], 1)
+        a["r"] = round(a["r"] + t["r"], 2)
     wins = sum(t["result_pips"] > 0 for t in trades)
     losses = sum(t["result_pips"] < 0 for t in trades)
+    gross_win = sum(t["r"] for t in trades if t["r"] > 0)
+    gross_loss = -sum(t["r"] for t in trades if t["r"] < 0)
     stats = {
         "total": len(trades), "wins": wins, "losses": losses, "be": len(trades) - wins - losses,
         "winrate": round(100 * wins / (wins + losses)) if wins + losses else 100,
         "pips": round(sum(t["result_pips"] for t in trades), 1),
         "r": round(sum(t["r"] for t in trades), 2),
+        "best": max(trades, key=lambda t: t["r"]), "worst": min(trades, key=lambda t: t["r"]),
+        "profit_factor": round(gross_win / gross_loss, 2) if gross_loss else None,
+        "assets": sorted(assets.values(), key=lambda a: -a["r"]),
+        "cancelled": cancelled,
     }
-    return T.report(period, label, trades, stats)
+    return T.report(kind, label, trades, stats)
+
+
+def _report_kb(kind, a, b):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(
+        "📢 Publier dans le canal", callback_data=f"rep:{a:%Y%m%d}:{b:%Y%m%d}:{kind}")]])
 
 
 @admin_only
 async def cmd_bilan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    period = (context.args[0].lower() if context.args else "jour")
-    if period not in ("jour", "semaine", "mois"):
-        period = "jour"
-    text = compute_report(period)
-    if not text:
-        await update.message.reply_text("Aucun trade clôturé sur cette période.")
+    res = resolve_period(context.args or [])
+    if not res:
+        await update.message.reply_text("❗ Période non reconnue.\n\n" + BILAN_HELP, parse_mode=ParseMode.HTML)
         return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Publier dans le canal", callback_data=f"rep:{period}")]])
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    kind, a, b, label = res
+    text = compute_report(kind, a, b, label)
+    if not text:
+        await update.message.reply_text(f"Aucun trade clôturé sur cette période ({label}).\n\n" + BILAN_HELP,
+                                        parse_mode=ParseMode.HTML)
+        return
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_report_kb(kind, a, b))
 
 
 @admin_only
 async def on_report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    period = q.data.split(":")[1]
-    text = compute_report(period)
+    parts = q.data.split(":")
+    if len(parts) == 4:
+        a = datetime.strptime(parts[1], "%Y%m%d").date()
+        b = datetime.strptime(parts[2], "%Y%m%d").date()
+        kind = parts[3]
+        if kind == "mois":
+            label = f"{MONTHS_FR[a.month - 1].capitalize()} {a.year}"
+        elif kind == "annee":
+            label = f"Année {a.year}"
+        elif a == b:
+            label = f"{a:%d/%m/%Y}"
+        else:
+            label = f"du {a:%d/%m/%Y} au {b:%d/%m/%Y}"
+        text = compute_report(kind, a, b, label)
+    else:  # ancien format de bouton
+        res = resolve_period([parts[1]])
+        text = compute_report(*res) if res else None
     if text:
         await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML)
         await q.answer("Bilan publié ✅")
@@ -817,11 +1082,232 @@ async def job_expire_orders(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def job_report(context: ContextTypes.DEFAULT_TYPE):
-    period = context.job.data
-    text = compute_report(period)
+    kind = context.job.data
+    today = datetime.now(TZ).date()
+    if kind == "mois":  # bilan mensuel : publié le dernier jour du mois
+        if (today + timedelta(days=1)).day != 1:
+            return
+    res = resolve_period([kind])
+    text = compute_report(*res) if res else None
     if text:
         await context.bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML)
-        log.info("Bilan %s publié automatiquement", period)
+        log.info("Bilan %s publié automatiquement", kind)
+
+
+# ================================================================ annonces économiques
+N_TITLE, N_TIME, N_IMPACT, N_ASSETS, N_FIGS, N_NOTE, N_CONFIRM = range(20, 27)
+NEWS_REMINDER_MIN = int(os.getenv("NEWS_REMINDER_MIN", "15") or 0)   # rappel X min avant (0 = désactivé)
+NEWS_PRESETS = [
+    ("NFP", "NFP — Emplois non agricoles US", "USD — XAUUSD, BTCUSD, indices"),
+    ("CPI", "CPI — Inflation US", "USD — XAUUSD, BTCUSD, indices"),
+    ("FOMC", "FOMC — Décision de taux de la Fed", "USD — tous les marchés"),
+    ("POWELL", "Discours de Jerome Powell (Fed)", "USD — XAUUSD, BTCUSD"),
+    ("PPI", "PPI — Prix à la production US", "USD — XAUUSD"),
+    ("CLAIMS", "Inscriptions hebdo au chômage US", "USD — XAUUSD"),
+    ("PIB", "PIB US (croissance)", "USD — XAUUSD, indices"),
+    ("PMI", "PMI ISM", "USD — XAUUSD, indices"),
+    ("BCE", "BCE — Décision de taux", "EUR — EURUSD, XAUUSD"),
+]
+
+
+def init_news_table():
+    with db() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS news(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, title TEXT, event_at TEXT,
+            impact TEXT, assets TEXT, forecast TEXT, previous TEXT, note TEXT,
+            msg_id INTEGER, reminded INTEGER DEFAULT 0, actual TEXT)""")
+
+
+def news_view(n: dict) -> dict:
+    v = dict(n)
+    dt = datetime.strptime(v["event_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).astimezone(TZ)
+    off = int(dt.utcoffset().total_seconds() // 3600)
+    v["when"] = f"{T.DAYS_FR[dt.weekday()].capitalize()} {dt:%d/%m} à {dt:%H:%M} " + ("GMT" if off == 0 else f"GMT{off:+d}")
+    v["hour"] = f"{dt:%H:%M}"
+    return v
+
+
+@admin_only
+async def news_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["news"] = {}
+    btns = [InlineKeyboardButton(k, callback_data=f"nt:{i}") for i, (k, _, _) in enumerate(NEWS_PRESETS)]
+    rows = [btns[i:i + 3] for i in range(0, len(btns), 3)]
+    await update.message.reply_text(
+        "📰 <b>Nouvelle annonce économique</b>\n\n1️⃣ Quel événement ? Choisis ou tape son nom :",
+        parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows))
+    return N_TITLE
+
+
+async def _news_ask_time(msg, title):
+    await msg.reply_text(
+        f"✅ {escape(title)}\n\n2️⃣ Heure de l'annonce ?\nex : <code>14:30</code> ou <code>10/10 14:30</code> "
+        f"(heure {TZ.key})", parse_mode=ParseMode.HTML)
+
+
+async def news_title_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    _, title, assets = NEWS_PRESETS[int(q.data.split(":")[1])]
+    context.user_data["news"].update(title=title, default_assets=assets)
+    await q.edit_message_reply_markup(None)
+    await _news_ask_time(q.message, title)
+    return N_TIME
+
+
+async def news_title_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    title = update.message.text.strip()[:120]
+    context.user_data["news"].update(title=title, default_assets="USD — XAUUSD, BTCUSD")
+    await _news_ask_time(update.message, title)
+    return N_TIME
+
+
+async def news_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    at = parse_expiry(update.message.text)
+    if not at:
+        await update.message.reply_text("❗ Heure non reconnue (ou déjà passée). Ex : 14:30 ou 10/10 14:30")
+        return N_TIME
+    context.user_data["news"]["event_at"] = at
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔴 Fort", callback_data="ni:fort"),
+                                InlineKeyboardButton("🟠 Moyen", callback_data="ni:moyen"),
+                                InlineKeyboardButton("🟡 Faible", callback_data="ni:faible")]])
+    await update.message.reply_text("3️⃣ Impact attendu ?", reply_markup=kb)
+    return N_IMPACT
+
+
+async def news_impact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["news"]["impact"] = q.data.split(":")[1]
+    await q.edit_message_reply_markup(None)
+    d = context.user_data["news"]["default_assets"]
+    await q.message.reply_text(
+        f"4️⃣ Devise / actifs concernés ?\nPar défaut : <i>{escape(d)}</i>\n(tape ton texte ou /passer)",
+        parse_mode=ParseMode.HTML)
+    return N_ASSETS
+
+
+async def news_assets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    n = context.user_data["news"]
+    txt = update.message.text.strip()
+    n["assets"] = n["default_assets"] if txt.lower() == "/passer" else txt[:120]
+    await update.message.reply_text(
+        "5️⃣ Prévision / précédent ?\nex : <code>180K / 175K</code> ou <code>3,1 % / 3,2 %</code> (ou /passer)",
+        parse_mode=ParseMode.HTML)
+    return N_FIGS
+
+
+async def news_figs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    n = context.user_data["news"]
+    txt = update.message.text.strip()
+    if txt.lower() != "/passer":
+        parts = [p.strip() for p in re.split(r"\s*[/|;]\s*", txt, maxsplit=1)]
+        n["forecast"] = parts[0][:40] or None
+        n["previous"] = parts[1][:40] if len(parts) > 1 else None
+    await update.message.reply_text(
+        "6️⃣ Ton conseil pour les membres ? (ou /passer pour le conseil standard)\n"
+        "ex : <i>Pas de nouvelle position 15 min avant et après. Volatilité forte attendue sur l'or.</i>",
+        parse_mode=ParseMode.HTML)
+    return N_NOTE
+
+
+async def news_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    n = context.user_data["news"]
+    txt = update.message.text.strip()
+    n["note"] = None if txt.lower() == "/passer" else txt[:400]
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Publier", callback_data="nok:publish"),
+                                InlineKeyboardButton("❌ Annuler", callback_data="nok:cancel")]])
+    await update.message.reply_text("👀 <b>Aperçu</b> :", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(T.news_post(news_view(n)), parse_mode=ParseMode.HTML, reply_markup=kb)
+    return N_CONFIRM
+
+
+async def news_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_reply_markup(None)
+    n = context.user_data.pop("news", {})
+    if q.data == "nok:cancel":
+        await q.message.reply_text("🗑️ Annonce annulée.")
+        return ConversationHandler.END
+    try:
+        msg = await context.bot.send_message(CHANNEL_ID, T.news_post(news_view(n)), parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await q.message.reply_text(f"❌ Publication impossible : {e}")
+        return ConversationHandler.END
+    with db() as c:
+        cur = c.execute(
+            "INSERT INTO news(created_at,title,event_at,impact,assets,forecast,previous,note,msg_id) VALUES(?,?,?,?,?,?,?,?,?)",
+            (utc_now_str(), n["title"], n["event_at"], n["impact"], n["assets"], n.get("forecast"),
+             n.get("previous"), n.get("note"), msg.message_id))
+        nid = cur.lastrowid
+    rappel = f"\n⏰ Rappel automatique {NEWS_REMINDER_MIN} min avant." if NEWS_REMINDER_MIN else ""
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📊 Publier le chiffre réel", callback_data=f"nr:{nid}")]])
+    await q.message.reply_text(f"📢 Annonce #{nid} publiée.{rappel}\n"
+                               f"Après la sortie du chiffre, appuie sur le bouton ci-dessous.", reply_markup=kb)
+    return ConversationHandler.END
+
+
+async def news_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("news", None)
+    await update.message.reply_text("🗑️ Saisie annulée.")
+    return ConversationHandler.END
+
+
+@admin_only
+async def on_news_result_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    nid = int(q.data.split(":")[1])
+    await q.answer()
+    context.user_data["await"] = ("news_result", nid)
+    await q.message.reply_text(
+        "✏️ Tape le chiffre réel, éventuellement suivi d'un commentaire.\n"
+        "ex : <code>210K Emploi plus fort que prévu, dollar en hausse</code>", parse_mode=ParseMode.HTML)
+
+
+def _num_from(text: str | None):
+    m = re.search(r"-?\d+(?:[.,]\d+)?", text or "")
+    return float(m.group().replace(",", ".")) if m else None
+
+
+async def news_publish_result(update: Update, context: ContextTypes.DEFAULT_TYPE, nid: int, txt: str):
+    with db() as c:
+        row = c.execute("SELECT * FROM news WHERE id=?", (nid,)).fetchone()
+    if not row:
+        await update.message.reply_text("Annonce introuvable.")
+        return
+    m = re.match(r"\s*(\S+)\s*(.*)", txt)
+    actual, comment = m.group(1), m.group(2).strip() or None
+    a, f = _num_from(actual), _num_from(row["forecast"])
+    verdict = None
+    if a is not None and f is not None:
+        verdict = "au-dessus des attentes" if a > f else ("en dessous des attentes" if a < f else "conforme aux attentes")
+    rp = ReplyParameters(message_id=row["msg_id"], allow_sending_without_reply=True) if row["msg_id"] else None
+    await context.bot.send_message(CHANNEL_ID, T.news_result(news_view(row), actual, verdict, comment),
+                                   parse_mode=ParseMode.HTML, reply_parameters=rp)
+    with db() as c:
+        c.execute("UPDATE news SET actual=? WHERE id=?", (actual, nid))
+    await update.message.reply_text("✅ Chiffre réel publié dans le canal.")
+
+
+async def job_news_reminders(context: ContextTypes.DEFAULT_TYPE):
+    if not NEWS_REMINDER_MIN:
+        return
+    now = datetime.now(timezone.utc)
+    soon = (now + timedelta(minutes=NEWS_REMINDER_MIN)).strftime("%Y-%m-%d %H:%M:%S")
+    with db() as c:
+        rows = c.execute("SELECT * FROM news WHERE reminded=0 AND event_at<=? AND event_at>?",
+                         (soon, now.strftime("%Y-%m-%d %H:%M:%S"))).fetchall()
+    for r in rows:
+        with db() as c:
+            c.execute("UPDATE news SET reminded=1 WHERE id=?", (r["id"],))
+        mins = max(1, round((datetime.strptime(r["event_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                             - now).total_seconds() / 60))
+        rp = ReplyParameters(message_id=r["msg_id"], allow_sending_without_reply=True) if r["msg_id"] else None
+        try:
+            await context.bot.send_message(CHANNEL_ID, T.news_reminder(news_view(r), mins),
+                                           parse_mode=ParseMode.HTML, reply_parameters=rp)
+        except Exception as e:
+            log.warning("Rappel annonce #%s impossible : %s", r["id"], e)
 
 
 # ================================================================ API pour l'IA de trading
@@ -1053,7 +1539,10 @@ async def api_update(bot, d: dict) -> tuple[int, dict]:
     price_text = price = None
     if ev == "close":
         price_text, price = _num(d.get("price"))
-    summary = await apply_action(bot, row, ev, price, price_text)
+    pct = None
+    if ev.startswith("tp") and d.get("close_pct") not in (None, ""):
+        pct = float(d["close_pct"])
+    summary = await apply_action(bot, row, ev, price, price_text, pct=pct)
     await _notify_admins(bot, f"🤖 Signal #{row['id']} : {summary}")
     new = get_signal(row["id"])
     return 200, {"ok": True, "id": row["id"], "status": new["status"], "message": summary}
@@ -1168,6 +1657,7 @@ def main():
     if not ADMIN_IDS:
         log.warning("ADMIN_IDS vide : envoie /start au robot pour connaître ton identifiant.")
     init_db()
+    init_news_table()
     app = Application.builder().token(BOT_TOKEN).post_init(start_api).post_shutdown(stop_api).build()
     private = filters.ChatType.PRIVATE
 
@@ -1191,6 +1681,22 @@ def main():
         conversation_timeout=15 * 60,
     )
     app.add_handler(conv)
+    txt = filters.TEXT & ~filters.COMMAND
+    news_conv = ConversationHandler(
+        entry_points=[CommandHandler("news", news_start, filters=private)],
+        states={
+            N_TITLE: [CallbackQueryHandler(news_title_cb, pattern=r"^nt:"), MessageHandler(txt, news_title_text)],
+            N_TIME: [MessageHandler(txt, news_time)],
+            N_IMPACT: [CallbackQueryHandler(news_impact, pattern=r"^ni:")],
+            N_ASSETS: [MessageHandler(txt, news_assets), CommandHandler("passer", news_assets)],
+            N_FIGS: [MessageHandler(txt, news_figs), CommandHandler("passer", news_figs)],
+            N_NOTE: [MessageHandler(txt, news_note), CommandHandler("passer", news_note)],
+            N_CONFIRM: [CallbackQueryHandler(news_confirm, pattern=r"^nok:")],
+        },
+        fallbacks=[CommandHandler("annuler", news_cancel)],
+        conversation_timeout=15 * 60,
+    )
+    app.add_handler(news_conv)
     app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", cmd_start, filters=private))
     app.add_handler(CommandHandler("aide", cmd_start, filters=private))
@@ -1203,11 +1709,15 @@ def main():
     app.add_handler(CallbackQueryHandler(on_update_button, pattern=r"^u:"))
     app.add_handler(CallbackQueryHandler(on_report_button, pattern=r"^rep:"))
     app.add_handler(CallbackQueryHandler(on_api_validation, pattern=r"^api:"))
+    app.add_handler(CallbackQueryHandler(on_pct_button, pattern=r"^p:"))
+    app.add_handler(CallbackQueryHandler(on_news_result_button, pattern=r"^nr:"))
     app.add_handler(MessageHandler(private & filters.FORWARDED, forwarded_from_channel))
+    app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_admin_text))
 
     # Bilans automatiques (PTB : 0 = dimanche ... 6 = samedi)
     if app.job_queue:
         app.job_queue.run_repeating(job_expire_orders, interval=60, first=10, name="expire_orders")
+        app.job_queue.run_repeating(job_news_reminders, interval=60, first=15, name="news_reminders")
     if DAILY_REPORT_TIME and app.job_queue:
         h, m = map(int, DAILY_REPORT_TIME.split(":"))
         app.job_queue.run_daily(job_report, time(h, m, tzinfo=TZ), days=(1, 2, 3, 4, 5), data="jour", name="daily")
@@ -1215,7 +1725,10 @@ def main():
         wd = days.get(WEEKLY_REPORT_DAY, 5)
         weekly_at = (datetime(2000, 1, 1, h, m) + timedelta(minutes=5)).time()
         app.job_queue.run_daily(job_report, weekly_at.replace(tzinfo=TZ), days=(wd,), data="semaine", name="weekly")
-        log.info("Bilans auto : quotidien %s, hebdo le %s", DAILY_REPORT_TIME, WEEKLY_REPORT_DAY)
+        monthly_at = (datetime(2000, 1, 1, h, m) + timedelta(minutes=10)).time()
+        app.job_queue.run_daily(job_report, monthly_at.replace(tzinfo=TZ), data="mois", name="monthly")
+        log.info("Bilans auto : quotidien %s, hebdo le %s, mensuel le dernier jour du mois",
+                 DAILY_REPORT_TIME, WEEKLY_REPORT_DAY)
 
     log.info("🤖 Robot démarré — canal %s, admins %s", CHANNEL_ID, ADMIN_IDS)
     try:
