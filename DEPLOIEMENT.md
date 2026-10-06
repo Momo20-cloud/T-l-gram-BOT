@@ -41,6 +41,20 @@ Ton identifiant Telegram (pour `OWNER_IDS`) : envoie `/id` à ton robot VIP actu
 6. **Deploy**. Dans les journaux, tu dois voir :
    `🌐 Page de vente en ligne sur le port …` puis `🏭 Usine démarrée`.
 
+### Option : lecture des captures TradingView
+
+Pour que les robots puissent lire les captures TradingView, le serveur a besoin de **Tesseract**, un logiciel gratuit de reconnaissance de texte.
+
+Ajoute cette variable sur **chaque service** qui doit lire les captures (ton canal VIP et/ou l'usine) :
+
+| Constructeur Railway (indiqué au début des journaux de build) | Variable |
+|---|---|
+| **Railpack** (par défaut aujourd'hui) | `RAILPACK_DEPLOY_APT_PACKAGES=tesseract-ocr` |
+| **Nixpacks** (anciens services) | `NIXPACKS_APT_PKGS=tesseract-ocr` |
+
+Au démarrage, le journal doit afficher `📷 Lecture des captures TradingView : activée`.
+Sans Tesseract, tout le reste fonctionne : le robot répond simplement que la lecture des captures n'est pas activée.
+
 ## 3. Teste comme un client (5 min)
 
 1. Ouvre ta page de vente → **Créer mon robot** → ça ouvre ton robot de vente dans Telegram.
