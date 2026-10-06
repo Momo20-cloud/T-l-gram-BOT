@@ -12,22 +12,25 @@ Essai gratuit, puis abonnement payé en Telegram Stars (ou prolongé à la main)
 bot.py n'est pas modifié : ton canal VIP continue de tourner sur son propre service.
 Lancement : python usine.py   (variables : voir .env.usine.example)
 """
-import asyncio
+import contextlib
 import html
 import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
+import threading
 import time as _time
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from dotenv import load_dotenv
 from telegram import (Bot, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, MessageOriginChannel,
                       Update)
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import InvalidToken, TelegramError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
                           MessageHandler, PreCheckoutQueryHandler, filters)
 
@@ -48,7 +51,7 @@ MAX_BOTS_PER_USER = int(os.getenv("MAX_BOTS_PER_USER", "1") or 1)
 OPEN_SIGNUP = os.getenv("OPEN_SIGNUP", "true").lower() in ("1", "true", "oui", "yes")
 SUPPORT_CONTACT = os.getenv("SUPPORT_CONTACT", "").strip()
 SITE_NAME = os.getenv("SITE_NAME", "").strip() or "Anonymetrader Signals"
-PORT = int(os.getenv("PORT", "0") or 0)          # Railway le fournit : la page de vente est servie dessus
+PORT = int(os.getenv("PORT", "8080") or 8080)    # Railway le fournit : la page de vente est servie dessus
 SITE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site", "index.html")
 CLIENT_SCRIPT = os.getenv("CLIENT_SCRIPT") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.py")
 
@@ -563,41 +566,84 @@ def render_site(bot_username: str | None) -> bytes:
     return page.encode("utf-8")
 
 
-def site_response(path: str, page: bytes) -> tuple[str, str, bytes]:
+SITE_STATE = {"bot_username": None, "error": None}   # mis à jour quand Telegram répond (ou échoue)
+_PAGE_CACHE: dict = {}
+
+
+def site_response(path: str) -> tuple[str, str, bytes]:
     """(statut, type, contenu) pour un chemin donné."""
     path = path.split("?", 1)[0]
     if path in ("/", "/index.html"):
-        return "200 OK", "text/html; charset=utf-8", page
+        user = SITE_STATE["bot_username"]
+        if user not in _PAGE_CACHE:
+            _PAGE_CACHE[user] = render_site(user)
+        return "200 OK", "text/html; charset=utf-8", _PAGE_CACHE[user]
     if path == "/health":
-        body = {"ok": True, "clients_en_marche": len(SUP.procs) if SUP else 0}
-        return "200 OK", "application/json", json.dumps(body).encode()
+        body = {"ok": SITE_STATE["error"] is None, "robot": SITE_STATE["bot_username"],
+                "erreur": SITE_STATE["error"], "clients_en_marche": len(SUP.procs) if SUP else 0}
+        return "200 OK", "application/json", json.dumps(body, ensure_ascii=False).encode()
     if path == "/robots.txt":
         return "200 OK", "text/plain", b"User-agent: *\nAllow: /\n"
     return "404 Not Found", "text/plain; charset=utf-8", "Page introuvable".encode()
 
 
-async def start_site(app: Application, bot_username: str | None):
-    page = render_site(bot_username)
+class _SiteHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self._reply(with_body=True)
 
-    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    def do_HEAD(self):
+        self._reply(with_body=False)
+
+    def _reply(self, with_body: bool):
         try:
-            line = (await asyncio.wait_for(reader.readline(), 10)).decode("latin-1")
-            while (await asyncio.wait_for(reader.readline(), 10)) not in (b"\r\n", b"\n", b""):
-                pass
-            parts = line.split()
-            method, path = (parts[0], parts[1]) if len(parts) >= 2 else ("GET", "/")
-            status, ctype, body = site_response(path, page)
-            head = (f"HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {len(body)}\r\n"
-                    "Cache-Control: public, max-age=300\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n")
-            writer.write(head.encode() + (b"" if method == "HEAD" else body))
-            await writer.drain()
-        except Exception:
-            pass
-        finally:
-            writer.close()
+            status, ctype, body = site_response(self.path)
+        except Exception as e:      # la page ne doit jamais faire tomber l'usine
+            log.exception("Erreur de la page de vente : %s", e)
+            status, ctype, body = "500 Internal Server Error", "text/plain; charset=utf-8", b"Erreur"
+        self.send_response(int(status.split()[0]))
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=300")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        if with_body:
+            self.wfile.write(body)
 
-    app.bot_data["site"] = await asyncio.start_server(handle, "0.0.0.0", PORT)
-    log.info("🌐 Page de vente en ligne sur le port %s", PORT)
+    def log_message(self, *args):   # pas de journal à chaque visite
+        pass
+
+
+class _DualStackServer(ThreadingHTTPServer):
+    """Écoute en IPv4 et IPv6 (Railway peut utiliser l'un ou l'autre)."""
+    address_family = socket.AF_INET6
+    daemon_threads = True
+
+    def server_bind(self):
+        with contextlib.suppress(Exception):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
+def start_site(port: int) -> ThreadingHTTPServer:
+    """Démarre la page de vente dans un fil séparé, indépendant de Telegram."""
+    try:
+        srv = _DualStackServer(("::", port), _SiteHandler)
+    except OSError:
+        srv = ThreadingHTTPServer(("0.0.0.0", port), _SiteHandler)
+        srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, name="page-de-vente", daemon=True).start()
+    log.info("🌐 Page de vente en ligne sur le port %s", srv.server_address[1])
+    return srv
+
+
+def _fail_but_keep_page(message: str):
+    """Erreur de configuration : on l'écrit dans le journal et sur /health, et la page reste en ligne
+    (sinon Railway affiche « L'application n'a pas répondu » sans explication)."""
+    SITE_STATE["error"] = message
+    log.error(message)
+    log.error("La page de vente reste en ligne. Corrige la variable sur Railway : le service redémarrera.")
+    while True:
+        _time.sleep(3600)
 
 
 async def post_init(app: Application):
@@ -606,31 +652,44 @@ async def post_init(app: Application):
                                        ("abonner", "Prolonger mon abonnement"), ("paysupport", "Aide paiement")])
     except TelegramError as e:
         log.warning("Menu des commandes non mis à jour : %s", e)
-    if PORT:
-        await start_site(app, app.bot.username)
+    SITE_STATE.update(bot_username=app.bot.username, error=None)
     SUP.sync()
     log.info("🏭 Usine démarrée — %s robots clients en marche", len(SUP.procs))
 
 
 async def post_shutdown(app: Application):
-    srv = app.bot_data.get("site")
-    if srv:
-        srv.close()
     SUP.stop_all()
 
 
 # ================================================================ démarrage
 def main():
     global STORE, SUP
+    start_site(PORT)
     if not TOKEN_RE.fullmatch(USINE_TOKEN):
-        raise SystemExit("❌ USINE_BOT_TOKEN manquant ou mal formé (jeton de TON robot de vente, depuis @BotFather).")
+        _fail_but_keep_page("❌ USINE_BOT_TOKEN manquant ou mal formé (jeton de TON robot de vente, depuis @BotFather).")
     if not OWNER_IDS:
         log.warning("OWNER_IDS vide : tu ne recevras pas les notifications ni les commandes propriétaire.")
     os.makedirs(DATA_DIR, exist_ok=True)
     STORE = ClientStore(os.path.join(DATA_DIR, "usine.db"))
     SUP = Supervisor(STORE, DATA_DIR, CLIENT_SCRIPT)
     log.info("Données : %s", os.path.abspath(DATA_DIR))
+    delay = 10
+    while True:
+        try:
+            build_app().run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
+            return                                   # arrêt normal (redéploiement)
+        except InvalidToken:
+            _fail_but_keep_page("❌ Telegram refuse USINE_BOT_TOKEN : recopie le jeton actuel depuis @BotFather "
+                                "(/mybots → ton robot → API Token).")
+        except Exception as e:                      # Telegram injoignable : on réessaie, la page reste en ligne
+            SITE_STATE["error"] = f"Telegram injoignable ({e.__class__.__name__}), nouvel essai dans {delay} s"
+            log.error("❌ Connexion à Telegram impossible : %s — nouvel essai dans %s s", e, delay)
+            SUP.stop_all()
+            _time.sleep(delay)
+            delay = min(delay * 2, 300)
 
+
+def build_app() -> Application:
     app = Application.builder().token(USINE_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
     private = filters.ChatType.PRIVATE
     txt = filters.TEXT & ~filters.COMMAND
@@ -653,7 +712,7 @@ def main():
     app.add_handler(PreCheckoutQueryHandler(on_precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_paid))
     app.job_queue.run_repeating(job_supervise, interval=30, first=30, name="supervise")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    return app
 
 
 if __name__ == "__main__":

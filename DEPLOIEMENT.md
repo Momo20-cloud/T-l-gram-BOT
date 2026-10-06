@@ -28,15 +28,15 @@ Ton identifiant Telegram (pour `OWNER_IDS`) : envoie `/id` à ton robot VIP actu
 ## 2. Ajoute le service sur Railway (5 min)
 
 1. Ouvre ton projet Railway (celui du canal VIP) → **+ New** → **GitHub Repo** → choisis ce dépôt.
-2. Dans le nouveau service → **Settings** :
-   - **Config-as-code → Railway Config File** : `railway.usine.json`
-     (ça règle la commande `python usine.py`, le contrôle de santé et les redémarrages)
-   - **Source → Branch** : la branche où se trouve ce code (`main` une fois fusionné).
+2. Dans le nouveau service → **Settings** → **Source → Branch** : `main`.
+   (Pas de commande à régler : le lanceur `start.py` démarre l'usine dès que la variable
+   `USINE_BOT_TOKEN` existe, et ton robot VIP sinon.)
 3. **Volume** : clic droit sur le service → **Attach Volume** → chemin de montage **`/data`**.
    ⚠️ Indispensable : sans volume, la liste des clients disparaît à chaque redéploiement.
 4. **Variables** → **Raw Editor** → colle le contenu de `.env.usine.example` et remplis :
    `USINE_BOT_TOKEN`, `OWNER_IDS`, `SUPPORT_CONTACT` (et `SITE_NAME` si tu veux un autre nom).
-5. **Settings → Networking → Generate Domain**. Railway te donne une adresse du type
+5. **Settings → Networking → Generate Domain**. Si Railway demande un port, mets **8080**.
+   Railway te donne une adresse du type
    `https://xxx.up.railway.app` : c'est ta **page de vente**. (Tu peux y brancher ton propre nom de domaine plus tard : *Custom Domain*.)
 6. **Deploy**. Dans les journaux, tu dois voir :
    `🌐 Page de vente en ligne sur le port …` puis `🏭 Usine démarrée`.
@@ -78,7 +78,9 @@ Tu reçois automatiquement : chaque nouveau client, chaque paiement, chaque expi
 
 | Symptôme | Cause probable |
 |---|---|
-| Le déploiement échoue au contrôle de santé | le domaine n'est pas généré ou `PORT` est écrasé dans les variables : supprime `PORT` |
+| « L'application n'a pas répondu » sur la page | le service démarre ton robot VIP au lieu de l'usine : vérifie que la variable `USINE_BOT_TOKEN` est bien sur **ce** service (les journaux doivent afficher `▶️ Démarrage de usine.py`). Vérifie aussi que le domaine pointe sur le port **8080** (Settings → Networking) |
+| La page s'affiche mais le robot de vente ne répond pas | ouvre `https://ton-adresse/health` : la ligne `erreur` dit ce qui ne va pas (jeton refusé, Telegram injoignable…) |
+| Le domaine a été généré sur le service du canal VIP | supprime-le (le robot VIP n'a pas de page) et génère-le sur le service de l'usine |
 | `USINE_BOT_TOKEN manquant ou mal formé` | jeton mal recopié (sans guillemets ni espaces) |
 | Clients perdus après un redéploiement | pas de volume monté sur `/data` |
 | Un client dit que son robot ne répond pas | `/journal ID` : jeton révoqué ou robot retiré du canal |
