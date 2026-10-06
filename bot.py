@@ -254,6 +254,8 @@ HELP = """🤖 <b>Robot ANONYMETRADER VIP</b>
 
 <b>Signaux</b>
 /signal — créer et publier un nouveau signal
+⚡ Ou envoie directement : <code>XAUUSD BUY 2650 SL 2645 TP 2655 2660</code>
+   (avec la photo + ce texte en légende, c'est encore plus rapide)
 /ouverts — signaux en cours + boutons de suivi
 🎯 Au TP, le robot te demande quel % clôturer (25 %, 50 %…)
 /cloture <code>ID PRIX</code> — clôture manuelle (ex : <code>/cloture 12 2655.3</code>)
@@ -335,10 +337,16 @@ async def cmd_accueil(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def sig_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["sig"] = {}
+    context.user_data["_flow"] = True
     rows = [[InlineKeyboardButton(p, callback_data=f"pair:{p}") for p in QUICK_PAIRS[i:i + 2]]
             for i in range(0, len(QUICK_PAIRS), 2)]
     await update.message.reply_text(
-        "📊 <b>Nouveau signal</b>\n\n1️⃣ Choisis l'actif ou tape-le (ex : USDJPY) :",
+        "📊 <b>Nouveau signal</b>\n\n"
+        "⚡ <b>Mode rapide</b> : envoie tout en un message, ex :\n"
+        "<code>XAUUSD BUY 2650 SL 2645 TP 2655 2660 2670</code>\n"
+        "<code>XAUUSD SELL LIMIT 2670 SL 2676 TP 2660 EXP 2h</code>\n"
+        "(ajoute ton analyse sur une 2e ligne si tu veux)\n\n"
+        "🐢 <b>Pas à pas</b> : choisis l'actif ou tape-le (ex : USDJPY) :",
         parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows))
     return PAIR
 
@@ -360,6 +368,8 @@ async def sig_pair_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def sig_pair_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if QUICK_RE.search(update.message.text or ""):
+        return await quick_signal(update, context)
     pair = re.sub(r"[^A-Z0-9./]", "", update.message.text.upper())[:15]
     if not pair:
         await update.message.reply_text("Tape un symbole valide, ex : XAUUSD")
@@ -480,6 +490,8 @@ async def sig_expiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def sig_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["sig"]["photo"] = update.message.photo[-1].file_id
+    if context.user_data["sig"].get("quick"):
+        return await _show_preview(update, context)
     return await _ask_note(update)
 
 
@@ -490,6 +502,8 @@ async def sig_photo_missing(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def sig_skip_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["sig"]["photo"] = None
+    if context.user_data["sig"].get("quick"):
+        return await _show_preview(update, context)
     return await _ask_note(update)
 
 
@@ -549,12 +563,81 @@ async def publish_signal(bot, s: dict) -> int:
 async def sig_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text
     context.user_data["sig"]["note"] = None if txt.strip().lower() == "/passer" else txt.strip()[:300]
+    return await _show_preview(update, context)
+
+
+async def _show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = context.user_data["sig"]
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Publier", callback_data="ok:publish"),
                                 InlineKeyboardButton("❌ Annuler", callback_data="ok:cancel")]])
     await update.message.reply_text("👀 <b>Aperçu</b> — voici ce qui sera publié :", parse_mode=ParseMode.HTML)
     await _send_post(context.bot, update.effective_chat.id, s, _next_id(), markup=kb)
     return CONFIRM
+
+
+# ---------------------------------------------------------------- mode rapide (tout en un message)
+QUICK_RE = re.compile(r"(?i)\b(buy|sell|achat|vente|long|short)\b.*\bsl\b.*\btp", re.S)
+QUICK_HELP = ("Format : <code>PAIRE BUY|SELL [LIMIT|STOP] ENTRÉE SL prix TP prix prix… [EXP 2h]</code>\n"
+              "ex : <code>XAUUSD BUY 2650 SL 2645 TP 2655 2660 2670</code>")
+
+
+def parse_quick_signal(text: str) -> dict:
+    """Signal complet en un message -> signal validé (lève ValueError avec un message clair)."""
+    text = (text or "").strip()
+    lines = text.splitlines()
+    first, note = lines[0], " ".join(l.strip() for l in lines[1:] if l.strip()) or None
+    m = re.search(r"(?i)\b(?:note|analyse|comment(?:aire)?)\s*:?\s*(.+)$", first)
+    if m:
+        note = (m.group(1) + (" " + note if note else "")).strip()
+        first = first[:m.start()]
+    expiry = None
+    m = re.search(r"(?i)\b(?:exp(?:ire)?|valid(?:e|ité|ite)?|jusqu\S*)\s*:?\s*"
+                  r"((?:\d{1,2}/\d{1,2}\s+)?\d{1,2}[:h]\d{2}|\d+(?:[.,]\d+)?\s*(?:h|heures?|min|minutes?|m)\b)", first)
+    if m:
+        expiry = m.group(1).replace(" ", "")
+        first = first[:m.start()] + first[m.end():]
+    if re.search(r"(?i)\b(?:exp(?:ire)?|validit[ée]|jusqu)", first):
+        raise ValueError("validité non comprise (ex : EXP 2h, EXP 90min, EXP 18:00, EXP 10/10 14:30)")
+    # virgules décimales : 2650,5 ou 1,0850 -> point
+    first = re.sub(r"\b(\d),(\d+)\b", r"\1.\2", first)
+    first = re.sub(r"(\d),(\d{1,2})\b", r"\1.\2", first)
+    d = parse_text_signal(first)
+    if not d.get("entry"):
+        raise ValueError("prix d'entrée manquant")
+    if not d.get("tp"):
+        raise ValueError("aucun TP trouvé (écris TP suivi des prix)")
+    if note:
+        d["note"] = note
+    if expiry:
+        d["valid_until"] = expiry
+    sig = build_signal(d)
+    if sig["order_type"] in PENDING_TYPES and expiry and not sig.get("expires_at"):
+        raise ValueError(f"validité « {expiry} » non comprise (ex : EXP 2h, EXP 90min, EXP 18:00)")
+    sig["source"] = "manuel"
+    sig["quick"] = True
+    return sig
+
+
+@admin_only
+async def quick_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    text = msg.caption if msg.photo else msg.text
+    try:
+        s = parse_quick_signal(text)
+    except ValueError as e:
+        await msg.reply_text(f"❗ {escape(str(e))}\n\n{QUICK_HELP}", parse_mode=ParseMode.HTML)
+        return PAIR if context.user_data.get("_flow") else ConversationHandler.END
+    context.user_data["sig"] = s
+    context.user_data["_flow"] = False
+    if msg.photo:  # photo + légende : tout est là, on passe à l'aperçu
+        s["photo"] = msg.photo[-1].file_id
+        return await _show_preview(update, context)
+    kind = s["direction"] if s["order_type"] == "MARKET" else f"{s['direction']} {s['order_type']}"
+    await msg.reply_text(
+        f"✅ Compris : <b>{escape(s['pair'])} {kind}</b> @ {s['entry_text']} · SL {s['sl_text']} · "
+        f"TP {' / '.join(s['tps_text'])}\n\n📸 Envoie la <b>photo</b> du graphique, ou /passer",
+        parse_mode=ParseMode.HTML)
+    return PHOTO
 
 
 async def sig_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1662,7 +1745,9 @@ def main():
     private = filters.ChatType.PRIVATE
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("signal", sig_start, filters=private)],
+        entry_points=[CommandHandler("signal", sig_start, filters=private),
+                      MessageHandler(private & filters.TEXT & ~filters.COMMAND & filters.Regex(QUICK_RE), quick_signal),
+                      MessageHandler(private & filters.PHOTO & filters.CaptionRegex(QUICK_RE), quick_signal)],
         states={
             PAIR: [CallbackQueryHandler(sig_pair_cb, pattern=r"^pair:"),
                    MessageHandler(filters.TEXT & ~filters.COMMAND, sig_pair_text)],
