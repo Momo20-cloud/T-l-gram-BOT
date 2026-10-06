@@ -27,6 +27,19 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(C._num("63500"), (63500.0, 0))
         self.assertIsNone(C._num("1h"))
 
+    def test_french_decimal_comma(self):
+        self.assertEqual(C._num("4227,982", True), (4227.982, 3))
+        self.assertEqual(C._num("4 227,982", True), (4227.982, 3))
+        self.assertEqual(C._num("2.660,00"), (2660.0, 2))
+        self.assertTrue(C._comma_is_decimal(["4236,000", "4232,000"]))
+        self.assertFalse(C._comma_is_decimal(["2,660", "2,655"]))
+
+    def test_pair_from_tradingview_names(self):
+        self.assertEqual(C._pair_from_names("Or / Dollar Américain · 1h · OANDA"), "XAUUSD")
+        self.assertEqual(C._pair_from_names("Euro / U.S. Dollar · 15"), "EURUSD")
+        self.assertEqual(C._pair_from_names("Livre Sterling / Yen Japonais"), "GBPJPY")
+        self.assertIsNone(C._pair_from_names("Indicateur / Volume"))
+
     def test_scale_fit_ignores_misread_labels(self):
         pts = [(100, 192.2, 3), (200, 192.0, 3), (300, 191.8, 3), (400, 191.6, 3),
                (350, 181.7, 3),            # « 191.7 » mal lu
@@ -69,6 +82,15 @@ class ReadCaptureTests(unittest.TestCase):
         self.assertClose(r.sl, 191.65, 0.006)
         self.assertClose(r.tp, 190.45, 0.006)
         self.assertTrue(r.exact)                  # au moins un niveau lu tel quel sur l'image
+
+    def test_real_tradingview_snapshot_french_compressed(self):
+        """Vraie capture TradingView d'un utilisateur (export « instantané », cadre noir, format français,
+        zones opaques, bande plus foncée près de l'entrée, ligne de prix qui traverse la zone),
+        réduite et compressée comme le fait Telegram. Les niveaux sont lus EXACTEMENT sur l'échelle."""
+        r = C.read_position_tool(load("tv_reel_xauusd_buy_fr.jpg"))
+        self.assertEqual((r.pair, r.direction), ("XAUUSD", "BUY"))
+        self.assertEqual((r.fmt(r.entry), r.fmt(r.sl), r.fmt(r.tp)), ("4163.285", "4154.141", "4227.982"))
+        self.assertEqual(sorted(r.exact), ["entry", "sl", "tp"])
 
     def test_image_without_tool_is_refused(self):
         with self.assertRaises(C.ChartReadError):
