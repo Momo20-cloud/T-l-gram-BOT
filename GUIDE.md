@@ -10,6 +10,28 @@
    Chaque bouton publie une mise à jour **en réponse au signal d'origine** dans le canal.
 6. Le soir, le robot publie tout seul le **bilan du jour** (lun→ven), le vendredi le **bilan de la semaine**, et le dernier jour du mois le **bilan du mois**.
 
+### ⚡ Mode rapide : tout en un message
+
+Plus besoin de répondre étape par étape : envoie directement au robot (même sans taper /signal) :
+
+```
+XAUUSD BUY 2650 SL 2645 TP 2655 2660 2670
+Cassure résistance H1, RSI > 50          ← analyse (optionnelle) sur la 2e ligne
+```
+
+Le robot répond « ✅ Compris », te demande la **photo** (ou /passer), puis montre l'**aperçu** avec ✅ Publier / ❌ Annuler.
+**Encore plus rapide :** envoie la photo du graphique avec ce texte **en légende** → aperçu direct.
+
+| Ce que tu veux | Exemple |
+|---|---|
+| Ordre au marché | `XAUUSD BUY 2650 SL 2645 TP 2655 2660` |
+| Zone d'entrée | `XAUUSD BUY 2650-2652 SL 2645 TP 2660` |
+| Ordre en attente + validité | `XAUUSD SELL LIMIT 2670 SL 2676 TP 2660 2650 EXP 2h` |
+| Validité à une heure | `BTCUSD SELL STOP 63500 SL 64000 TP 63000 EXP 18:00` |
+| Analyse sur la même ligne | `... TP 2660 NOTE: cassure du support` |
+
+Les virgules décimales (`2650,5`, `1,0850`) sont acceptées. Le robot vérifie que le SL et les TP sont du bon côté, et t'explique l'erreur sinon. Le mode pas à pas (`/signal` puis les boutons) existe toujours.
+
 ### Commandes
 
 | Commande | Rôle |
