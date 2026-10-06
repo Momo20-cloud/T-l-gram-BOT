@@ -458,7 +458,22 @@ footer .disc{max-width:620px;font-size:13px;line-height:1.6}
   </div>
 </footer>
 
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script>
+/* Ouverte dans Telegram (Mini App) : plein écran, couleurs assorties, et les boutons t.me
+   ramènent dans la conversation du robot au lieu d'ouvrir un navigateur. */
+(function(){
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if(!tg || !tg.initData) return;
+  try{ tg.ready(); tg.expand(); tg.setHeaderColor('#07080c'); tg.setBackgroundColor('#07080c'); }catch(e){}
+  document.addEventListener('click', function(ev){
+    var a = ev.target.closest && ev.target.closest('a[href^="https://t.me/"]');
+    if(!a) return;
+    ev.preventDefault();
+    tg.openTelegramLink(a.href);
+    try{ tg.close(); }catch(e){}
+  });
+})();
 (function(){
   var els=document.querySelectorAll('.rv');
   if(!('IntersectionObserver' in window)){els.forEach(function(e){e.classList.add('in')});return}

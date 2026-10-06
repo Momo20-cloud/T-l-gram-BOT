@@ -219,14 +219,14 @@ class SiteTests(unittest.TestCase):
         import usine
         page = usine.render_site("MaUsineBot").decode()
         self.assertEqual(re.findall(r"\{\{\w+\}\}", page), [])
-        self.assertIn("https://t.me/MaUsineBot?start=site", page)
+        self.assertIn("https://t.me/MaUsineBot?start=creer", page)
         srv = usine.start_site(0)                       # port libre choisi par le système
         try:
             port = srv.server_address[1]
             usine.SITE_STATE.update(bot_username="MaUsineBot", error=None)
             code, body = self._get(port, "/")
             self.assertEqual(code, 200)
-            self.assertIn("https://t.me/MaUsineBot?start=site", body)
+            self.assertIn("https://t.me/MaUsineBot?start=creer", body)
             code, body = self._get(port, "/health")
             self.assertEqual(code, 200)
             self.assertIn('"ok": true', body)
@@ -393,3 +393,37 @@ class SalesBotMenuTests(unittest.TestCase):
         state = asyncio.run(self.usine.creer_start(u, self.ctx))
         self.assertEqual(state, self.usine.C_TOKEN)
         self.assertIn("Étape 1/3", u.effective_message.reply_text.call_args.args[0])
+
+
+class DeepLinkTests(unittest.TestCase):
+    def _update(self, text, bot):
+        from datetime import datetime, timezone
+        from telegram import Chat, Message, MessageEntity, Update, User
+        user = User(10, "Momo", False)
+        msg = Message(1, datetime.now(timezone.utc), Chat(10, "private"), from_user=user, text=text,
+                      entities=[MessageEntity("bot_command", 0, len(text.split()[0]))])
+        msg.set_bot(bot)
+        upd = Update(1, message=msg)
+        upd.set_bot(bot)
+        return upd
+
+    def test_start_creer_from_sales_page_opens_signup(self):
+        from telegram.ext import ConversationHandler
+        import usine
+        usine.USINE_TOKEN = "1234567:" + "x" * 35
+        app = usine.build_app()
+        from telegram import User
+        app.bot._bot_user = User(1, "Usine", True, username="MaUsineBot")   # comme après la connexion
+        conv = next(h for h in app.handlers[0] if isinstance(h, ConversationHandler))
+        self.assertTrue(conv.check_update(self._update("/start creer", app.bot)))   # bouton de la page → inscription
+        self.assertFalse(conv.check_update(self._update("/start", app.bot)))         # /start simple → accueil
+
+    def test_menu_opens_sales_page_inside_telegram(self):
+        import usine
+        old = usine.SITE_URL
+        try:
+            usine.SITE_URL = "https://exemple.up.railway.app"
+            btn = [b for row in usine.main_menu_kb().inline_keyboard for b in row if b.web_app]
+            self.assertEqual(btn[0].web_app.url, "https://exemple.up.railway.app")
+        finally:
+            usine.SITE_URL = old

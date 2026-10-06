@@ -27,8 +27,8 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from dotenv import load_dotenv
-from telegram import (Bot, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, MessageOriginChannel,
-                      Update)
+from telegram import (Bot, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, MenuButtonWebApp,
+                      MessageOriginChannel, Update, WebAppInfo)
 from telegram.constants import ParseMode
 from telegram.error import InvalidToken, TelegramError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
@@ -264,8 +264,8 @@ def main_menu_kb(has_bot: bool = False) -> InlineKeyboardMarkup:
     rows = [[b("🤖 Mon robot", callback_data="menu:mon") if has_bot else b("🚀 Créer mon robot", callback_data="menu:creer")],
             [b("⭐ Abonnement", callback_data="menu:abo"), b("🧭 Comment ça marche", callback_data="menu:aide")],
             [b("💬 Support", callback_data="menu:support")]]
-    if SITE_URL:
-        rows[-1].append(b("🌐 Site", url=SITE_URL))
+    if SITE_URL:   # la page de vente s'ouvre dans Telegram (Mini App)
+        rows[-1].append(b("🌐 Découvrir", web_app=WebAppInfo(SITE_URL)))
     return InlineKeyboardMarkup(rows)
 
 
@@ -637,7 +637,7 @@ async def job_supervise(context: ContextTypes.DEFAULT_TYPE):
 def render_site(bot_username: str | None) -> bytes:
     with open(SITE_FILE, encoding="utf-8") as f:
         page = f.read()
-    link = f"https://t.me/{bot_username}?start=site" if bot_username else "#"
+    link = f"https://t.me/{bot_username}?start=creer" if bot_username else "#"   # ouvre directement l'inscription
     support = SUPPORT_CONTACT or (f"@{bot_username}" if bot_username else "")
     values = {"SITE_NAME": SITE_NAME, "BOT_LINK": link, "TRIAL_DAYS": TRIAL_DAYS, "SUB_DAYS": SUB_DAYS,
               "PRICE_STARS_FMT": f"{PRICE_STARS:,}".replace(",", "\u202f"), "SUPPORT": support}
@@ -739,6 +739,11 @@ async def post_init(app: Application):
             f"Ton robot de signaux Telegram à ta marque. {TRIAL_DAYS} jours gratuits." + (f" {SITE_URL}" if SITE_URL else ""))
     except TelegramError as e:
         log.warning("Profil du robot non mis à jour : %s", e)
+    if SITE_URL:
+        try:   # bouton à gauche du champ de saisie : ouvre la page de vente dans Telegram
+            await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("Découvrir", WebAppInfo(SITE_URL)))
+        except TelegramError as e:
+            log.warning("Bouton Mini App non installé : %s", e)
     SITE_STATE.update(bot_username=app.bot.username, error=None)
     SUP.sync()
     log.info("🏭 Usine démarrée — %s robots clients en marche", len(SUP.procs))
@@ -782,6 +787,7 @@ def build_app() -> Application:
     txt = filters.TEXT & ~filters.COMMAND
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("creer", creer_start, filters=private),
+                      CommandHandler("start", creer_start, filters=private & filters.Regex(r"^/start creer$")),
                       CallbackQueryHandler(creer_start, pattern=r"^menu:creer$")],
         states={
             C_TOKEN: [MessageHandler(txt, creer_token)],
