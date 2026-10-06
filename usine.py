@@ -48,6 +48,8 @@ SUB_DAYS = int(os.getenv("SUB_DAYS", "30") or 30)
 PRICE_STARS = int(os.getenv("PRICE_STARS", "1500") or 0)        # 0 = paiement Stars désactivé
 REMIND_DAYS = int(os.getenv("REMIND_DAYS", "3") or 3)
 MAX_BOTS_PER_USER = int(os.getenv("MAX_BOTS_PER_USER", "1") or 1)
+REF_BONUS_DAYS = int(os.getenv("REF_BONUS_DAYS", "30") or 0)        # offerts au parrain au 1er paiement du filleul
+REF_TRIAL_BONUS = int(os.getenv("REF_TRIAL_BONUS", "7") or 0)       # jours d'essai en plus pour le filleul
 OPEN_SIGNUP = os.getenv("OPEN_SIGNUP", "true").lower() in ("1", "true", "oui", "yes")
 SUPPORT_CONTACT = os.getenv("SUPPORT_CONTACT", "").strip()
 SITE_NAME = os.getenv("SITE_NAME", "").strip() or "Anonymetrader Signals"
@@ -203,14 +205,22 @@ def client_line(c: dict, admin: bool = False) -> str:
             + (f" ({left:.0f} j restants)" if left > 0 else ""))
     if admin:
         line += f"\n   client <code>{c['owner_id']}</code> · canal <code>{escape(c['channel_id'])}</code>"
+        if c.get("referred_by"):
+            line += f" · parrain <code>{c['referred_by']}</code>"
     return line
+
+
+def client_price(c: dict | None) -> int:
+    """Tarif du client : son tarif bloqué (offre fondateurs) s'il en a un, sinon le tarif normal."""
+    return int(c["price_stars"]) if c and c.get("price_stars") else PRICE_STARS
 
 
 def pay_kb(client_id: int) -> InlineKeyboardMarkup | None:
     if PRICE_STARS <= 0:
         return None
+    price = client_price(STORE.get(client_id)) if STORE else PRICE_STARS
     return InlineKeyboardMarkup([[InlineKeyboardButton(
-        f"⭐ Payer {SUB_DAYS} jours — {PRICE_STARS} Stars", callback_data=f"pay:{client_id}")]])
+        f"⭐ Payer {SUB_DAYS} jours — {price} Stars", callback_data=f"pay:{client_id}")]])
 
 
 async def notify_owners(bot, text: str):
@@ -256,12 +266,14 @@ OWNER_HELP = """🛠 <b>Espace propriétaire</b>
 /prolonger <code>ID JOURS</code> — ajouter des jours (paiement manuel)
 /suspendre <code>ID</code> · /reactiver <code>ID</code>
 /supprimer <code>ID</code> — arrêter et retirer un client
-/journal <code>ID</code> — dernières lignes du journal de son robot"""
+/journal <code>ID</code> — dernières lignes du journal de son robot
+/tarif <code>ID PRIX</code> — tarif bloqué (offre fondateurs) · <code>/tarif ID normal</code> pour annuler"""
 
 
 def main_menu_kb(has_bot: bool = False) -> InlineKeyboardMarkup:
     b = InlineKeyboardButton
-    rows = [[b("🤖 Mon robot", callback_data="menu:mon") if has_bot else b("🚀 Créer mon robot", callback_data="menu:creer")],
+    rows = [[b("🤖 Mon robot", callback_data="menu:mon") if has_bot else b("🚀 Créer mon robot", callback_data="menu:creer")]
+            + ([b("🎁 Parrainage", callback_data="menu:parrain")] if has_bot and REF_BONUS_DAYS else []),
             [b("⭐ Abonnement", callback_data="menu:abo"), b("🧭 Comment ça marche", callback_data="menu:aide")],
             [b("💬 Support", callback_data="menu:support")]]
     if SITE_URL:   # la page de vente s'ouvre dans Telegram (Mini App)
@@ -286,8 +298,15 @@ async def _ack(update: Update):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await _ack(update)
-    mine = STORE.by_owner(update.effective_user.id)
+    uid = update.effective_user.id
+    mine = STORE.by_owner(uid)
     text = WELCOME
+    arg = (context.args or [""])[0] if not update.callback_query else ""
+    if arg.startswith("ref_"):                                   # arrivé par le lien d'un client
+        sponsor = STORE.referrer_for_code(arg[4:])
+        if sponsor and STORE.set_pending_referral(uid, sponsor) and REF_TRIAL_BONUS:
+            text += (f"\n\n🤝 <b>Invité par un membre</b> : ton essai passe à "
+                     f"<b>{TRIAL_DAYS + REF_TRIAL_BONUS} jours</b>.")
     if mine:
         name = escape(update.effective_user.first_name or "")
         text = f"👋 <b>Bon retour {name} !</b>\n\n" + "\n\n".join(client_line(c) for c in mine)
@@ -313,9 +332,58 @@ async def cmd_aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(HOW_IT_WORKS, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(has_bot))
 
 
+def referral_link(bot_username: str, owner_id: int) -> str:
+    return f"https://t.me/{bot_username}?start=ref_{STORE.referral_code(owner_id)}"
+
+
+async def cmd_parrainage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await _ack(update)
+    uid = update.effective_user.id
+    if not REF_BONUS_DAYS:
+        await msg.reply_text("Le parrainage n'est pas ouvert pour le moment.")
+        return
+    if not STORE.by_owner(uid):
+        await msg.reply_text("Crée d'abord ton robot pour obtenir ton lien de parrainage.", reply_markup=main_menu_kb(False))
+        return
+    link = referral_link(context.bot.username, uid)
+    st = STORE.referral_stats(uid)
+    share_text = (f"J'utilise ce robot pour publier mes signaux Telegram. "
+                  f"Avec mon lien tu as {TRIAL_DAYS + REF_TRIAL_BONUS} jours d'essai gratuit 👇")
+    from urllib.parse import quote
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "📤 Partager mon lien", url=f"https://t.me/share/url?url={quote(link)}&text={quote(share_text)}")]])
+    await msg.reply_text(
+        "🎁 <b>Parrainage</b>\n\n"
+        f"Invite un autre admin de canal :\n"
+        f"• <b>lui</b> : {TRIAL_DAYS + REF_TRIAL_BONUS} jours d'essai au lieu de {TRIAL_DAYS}\n"
+        f"• <b>toi</b> : <b>+{REF_BONUS_DAYS} jours offerts</b> dès son premier paiement\n\n"
+        f"🔗 Ton lien :\n<code>{escape(link)}</code>\n\n"
+        f"📊 Filleuls : <b>{st['invited']}</b> · abonnés : <b>{st['paid']}</b> · jours gagnés : <b>{st['days_earned']}</b>",
+        parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
+
+
+async def credit_referrer(bot, referred_client_id: int):
+    """Après un paiement : offre les jours au parrain (une seule fois par filleul) et le prévient."""
+    res = STORE.reward_referrer(referred_client_id, REF_BONUS_DAYS)
+    if not res:
+        return
+    sponsor_id, target, until = res
+    SUP.sync()
+    try:
+        await bot.send_message(
+            sponsor_id, f"🎁 <b>Merci pour ton parrainage !</b>\nTon filleul vient de s'abonner : "
+            f"<b>+{REF_BONUS_DAYS} jours offerts</b> sur @{escape(target['bot_username'])}, "
+            f"jusqu'au <b>{fmt_date(until)}</b>.", parse_mode=ParseMode.HTML)
+    except TelegramError:
+        pass
+    await notify_owners(bot, f"🎁 Parrainage récompensé : +{REF_BONUS_DAYS} j pour <code>{sponsor_id}</code> "
+                             f"(filleul #{referred_client_id})")
+
+
 async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = update.callback_query.data.split(":", 1)[1]
-    handler = {"mon": cmd_monrobot, "abo": cmd_abonner, "aide": cmd_aide, "support": cmd_paysupport}.get(action)
+    handler = {"mon": cmd_monrobot, "abo": cmd_abonner, "aide": cmd_aide, "support": cmd_paysupport,
+               "parrain": cmd_parrainage}.get(action)
     if handler:
         await handler(update, context)
     else:
@@ -356,7 +424,7 @@ async def send_invoice(bot, chat_id: int, c: dict):
         description=f"Robot @{c['bot_username']} ({c['brand']}) : {SUB_DAYS} jours de plus.",
         payload=f"sub:{c['id']}",
         currency="XTR",                 # Telegram Stars : pas de fournisseur de paiement à configurer
-        prices=[LabeledPrice(f"{SUB_DAYS} jours", PRICE_STARS)],
+        prices=[LabeledPrice(f"{SUB_DAYS} jours", client_price(c))],
     )
 
 
@@ -374,7 +442,7 @@ async def on_precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.pre_checkout_query
     m = re.fullmatch(r"sub:(\d+)", q.invoice_payload or "")
     c = STORE.get(int(m.group(1))) if m else None
-    if not c or q.currency != "XTR" or q.total_amount != PRICE_STARS:
+    if not c or q.currency != "XTR" or q.total_amount != client_price(c):
         await q.answer(ok=False, error_message="Ce paiement n'est plus valable. Tape /abonner pour recommencer.")
         return
     if c["status"] == STATUS_SUSPENDED:
@@ -398,6 +466,7 @@ async def on_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Merci ! Abonnement prolongé jusqu'au <b>{fmt_date(until)}</b>.\n\n{client_line(c)}",
         parse_mode=ParseMode.HTML)
     await notify_owners(context.bot, f"💰 Paiement reçu : {sp.total_amount} ⭐\n{client_line(c, admin=True)}")
+    await credit_referrer(context.bot, cid)
 
 
 async def cmd_paysupport(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -507,7 +576,12 @@ async def creer_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if STORE.token_exists(d["token"]):
         await update.message.reply_text("❌ Ce robot vient d'être enregistré. Tape /monrobot.")
         return ConversationHandler.END
-    cid = STORE.add(update.effective_user.id, d["token"], d["username"], str(d["channel"]), brand, TRIAL_DAYS)
+    sponsor = STORE.pending_referrer(update.effective_user.id)
+    if sponsor == update.effective_user.id:
+        sponsor = None
+    trial = TRIAL_DAYS + (REF_TRIAL_BONUS if sponsor else 0)
+    cid = STORE.add(update.effective_user.id, d["token"], d["username"], str(d["channel"]), brand, trial,
+                    referred_by=sponsor)
     d.clear()
     SUP.sync()
     c = STORE.get(cid)
@@ -515,9 +589,16 @@ async def creer_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎉 <b>C'est prêt !</b>\n\n{client_line(c)}\n\n"
         f"👉 Ouvre @{escape(c['bot_username'])} et tape /start : il te montre toutes ses commandes "
         "(/signal, /bilan, /news…).\n"
-        f"🎁 Essai gratuit de {TRIAL_DAYS} jours. Je te préviens avant la fin.", parse_mode=ParseMode.HTML,
+        f"🎁 Essai gratuit de {trial} jours. Je te préviens avant la fin.", parse_mode=ParseMode.HTML,
         reply_markup=open_bot_kb(c, with_pay=False))
     await notify_owners(context.bot, f"🆕 Nouveau client\n{client_line(c, admin=True)}")
+    if sponsor:
+        try:
+            await context.bot.send_message(
+                sponsor, f"🤝 Ton filleul vient de créer son robot @{escape(c['bot_username'])}. "
+                f"Tu recevras <b>+{REF_BONUS_DAYS} jours</b> dès son premier paiement.", parse_mode=ParseMode.HTML)
+        except TelegramError:
+            pass
     return ConversationHandler.END
 
 
@@ -556,12 +637,29 @@ async def cmd_prolonger(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     until = STORE.extend(c["id"], int(context.args[1]), "MANUEL")
     SUP.sync()
+    await credit_referrer(context.bot, c["id"])
     await update.message.reply_text(f"✅ #{c['id']} prolongé jusqu'au {fmt_date(until)}")
     try:
         await context.bot.send_message(c["owner_id"], f"✅ Ton abonnement est prolongé jusqu'au <b>{fmt_date(until)}</b>.",
                                        parse_mode=ParseMode.HTML)
     except TelegramError:
         pass
+
+
+async def cmd_tarif(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/tarif ID PRIX : bloque un tarif pour ce client (offre fondateurs). /tarif ID normal : retour au tarif normal."""
+    if not is_owner(update):
+        return
+    c = _owner_arg_client(update, context)
+    arg = context.args[1].lower() if c and len(context.args) > 1 else ""
+    if not c or not (arg.isdigit() and int(arg) > 0 or arg == "normal"):
+        await update.message.reply_text(f"Usage : /tarif ID PRIX (en Stars, ex : /tarif 3 1000) ou /tarif ID normal\n"
+                                        f"Tarif normal actuel : {PRICE_STARS} ⭐")
+        return
+    STORE.set_price(c["id"], None if arg == "normal" else int(arg))
+    price = client_price(STORE.get(c["id"]))
+    await update.message.reply_text(f"✅ Client #{c['id']} : {price} ⭐ / {SUB_DAYS} jours"
+                                    + (" (tarif bloqué)" if arg != "normal" else " (tarif normal)"))
 
 
 async def _set_status(update, context, status, label):
@@ -730,7 +828,8 @@ async def post_init(app: Application):
     try:
         await app.bot.set_my_commands([("start", "Accueil"), ("creer", "Créer mon robot"),
                                        ("monrobot", "Mon robot et mon abonnement"), ("abonner", "Abonnement"),
-                                       ("aide", "Comment ça marche"), ("paysupport", "Support")])
+                                       ("parrainage", "Parrainer un admin"), ("aide", "Comment ça marche"),
+                                       ("paysupport", "Support")])
         # Profil du robot : texte affiché avant « Démarrer » et dans sa fiche
         await app.bot.set_my_description(
             f"💎 {SITE_NAME}\n\nCrée ton propre robot de signaux Telegram en 3 minutes : signaux à ta marque, "
@@ -800,7 +899,7 @@ def build_app() -> Application:
     for name, fn in (("start", cmd_start), ("aide", cmd_aide), ("monrobot", cmd_monrobot), ("abonner", cmd_abonner),
                      ("paysupport", cmd_paysupport), ("clients", cmd_clients), ("prolonger", cmd_prolonger),
                      ("suspendre", cmd_suspendre), ("reactiver", cmd_reactiver), ("supprimer", cmd_supprimer),
-                     ("journal", cmd_journal)):
+                     ("journal", cmd_journal), ("parrainage", cmd_parrainage), ("tarif", cmd_tarif)):
         app.add_handler(CommandHandler(name, fn, filters=private))
     app.add_handler(CallbackQueryHandler(on_pay_button, pattern=r"^pay:\d+$"))
     app.add_handler(CallbackQueryHandler(on_menu, pattern=r"^menu:"))
