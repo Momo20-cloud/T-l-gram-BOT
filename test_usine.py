@@ -288,6 +288,32 @@ class LauncherTests(unittest.TestCase):
     def test_vip_service_still_runs_bot(self):
         self.assertEqual(self._which({}), "bot.py")
 
+    def test_bot_py_hands_over_to_factory(self):
+        """Railway lance « python bot.py » sur le service de l'usine : bot.py doit passer la main à usine.py."""
+        import socket
+        import urllib.request
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0))
+            port = sk.getsockname()[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {k: v for k, v in os.environ.items() if k not in ("BOT_TOKEN", "USINE_BOT_TOKEN")}
+            env.update(USINE_BOT_TOKEN="pas-un-jeton", PORT=str(port), DATA_DIR=tmp)
+            p = subprocess.Popen([sys.executable, os.path.join(HERE, "bot.py")], cwd=tmp, env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                for _ in range(100):
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as r:
+                            self.assertEqual(r.status, 200)
+                        break
+                    except OSError:
+                        time.sleep(0.1)
+                else:
+                    self.fail("la page de l'usine n'a jamais répondu")
+            finally:
+                p.kill()
+                p.wait()
+
     def test_factory_service_runs_usine(self):
         self.assertEqual(self._which({"USINE_BOT_TOKEN": "123:abc"}), "usine.py")
 

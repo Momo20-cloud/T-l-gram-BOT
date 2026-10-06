@@ -2010,6 +2010,11 @@ async def setting_typed(update: Update, context: ContextTypes.DEFAULT_TYPE, key:
 
 # ================================================================ démarrage
 def main():
+    if not BOT_TOKEN and os.getenv("USINE_BOT_TOKEN", "").strip():
+        # Service de l'usine démarré avec « python bot.py » (commande Railway) : on bascule sur l'usine.
+        import sys
+        log.info("USINE_BOT_TOKEN trouvé sans BOT_TOKEN : démarrage de l'usine à robots (usine.py)")
+        os.execv(sys.executable, [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "usine.py")])
     if not BOT_TOKEN:
         seen = sorted(k for k in os.environ if "TOKEN" in k.upper() or "BOT" in k.upper())
         raise SystemExit(
