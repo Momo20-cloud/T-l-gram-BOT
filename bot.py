@@ -5,6 +5,7 @@ Tu parles au robot en privé (/signal), il te pose les questions,
 te montre un aperçu, puis publie le signal dans ton canal VIP
 avec la photo et le modèle défini dans templates.py.
 """
+import asyncio
 import hmac
 from templates import escape
 import io
@@ -259,6 +260,7 @@ HELP = f"""🤖 <b>Robot {T.escape(T.BRAND)}</b>
 <b>Signaux</b>
 /signal — créer et publier un nouveau signal
 ⚡ Ou envoie directement : <code>XAUUSD BUY 2650 SL 2645 TP 2655 2660</code>
+📷 Ou une <b>capture TradingView</b> avec l'outil Position longue/courte : je lis l'entrée, le SL et le TP
    (avec la photo + ce texte en légende, c'est encore plus rapide)
 /ouverts — signaux en cours + boutons de suivi
 🎯 Au TP, le robot te demande quel % clôturer (25 %, 50 %…)
@@ -672,6 +674,113 @@ async def quick_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"TP {' / '.join(s['tps_text'])}{unknown_pair_warning(s['pair'])}\n\n📸 Envoie la <b>photo</b> du graphique, ou /passer",
         parse_mode=ParseMode.HTML)
     return PHOTO
+
+
+# ---------------------------------------------------------------- lecture d'une capture TradingView
+CHART_PAIR = 30
+CHART_HELP = ("💡 Il me faut une capture <b>TradingView</b> avec l'outil <b>Position longue / courte</b> visible en entier "
+              "et l'échelle de prix à droite.\nSinon, envoie la photo avec le signal en légende : "
+              "<code>XAUUSD BUY 2650 SL 2645 TP 2660</code>")
+
+
+def _pairs_in(text: str) -> tuple[str | None, str]:
+    """Actif trouvé dans une légende + le reste du texte (utilisé comme analyse)."""
+    pair, rest = None, []
+    for tok in (text or "").split():
+        if pair is None and len(tok) >= 3 and I.is_known(tok):
+            pair = I.normalize(tok)
+        else:
+            rest.append(tok)
+    return pair, " ".join(rest).strip()
+
+
+@admin_only
+async def chart_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Capture TradingView sans légende de signal : on lit l'outil de position."""
+    msg = update.message
+    try:
+        import chart_reader as CR
+    except ImportError:
+        CR = None
+    if CR is None or not CR.available():
+        await msg.reply_text("📷 La lecture des captures n'est pas activée sur ce serveur.\n" + CHART_HELP,
+                             parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+    if msg.photo:
+        f, photo_id = await msg.photo[-1].get_file(), msg.photo[-1].file_id
+    else:
+        f, photo_id = await msg.document.get_file(), None
+    raw = bytes(await f.download_as_bytearray())
+    wait = await msg.reply_text("🔎 Je lis ta capture…")
+    try:
+        r = await asyncio.to_thread(CR.read_position_tool, raw)
+    except CR.ChartReadError as e:
+        await wait.edit_text(f"❗ Je n'ai pas pu lire la capture : {escape(str(e))}.\n\n{CHART_HELP}", parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+    except Exception as e:  # image illisible, format inattendu…
+        log.warning("Lecture de capture impossible : %s", e)
+        await wait.edit_text(f"❗ Image illisible.\n\n{CHART_HELP}", parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+    cap_pair, note = _pairs_in(msg.caption or "")
+    context.user_data["chart"] = {
+        "direction": r.direction, "entry": r.fmt(r.entry), "sl": r.fmt(r.sl), "tp": r.fmt(r.tp),
+        "estimated": [k for k in ("entry", "sl", "tp") if not r.exact.get(k)], "note": note or None,
+        "photo": photo_id, "photo_bytes": None if photo_id else raw,
+    }
+    await wait.delete()
+    pair = cap_pair or r.pair
+    if not pair:
+        await msg.reply_text(f"🔎 Lu : <b>{r.direction}</b> @ {r.fmt(r.entry)} · SL {r.fmt(r.sl)} · TP {r.fmt(r.tp)}\n\n"
+                             "❓ Je n'ai pas trouvé le nom de l'actif. Lequel est-ce ? (ex : XAUUSD)", parse_mode=ParseMode.HTML)
+        return CHART_PAIR
+    return await _chart_finish(update, context, pair)
+
+
+async def chart_pair_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pair = I.normalize(update.message.text)
+    if not pair or "chart" not in context.user_data:
+        await update.message.reply_text("Tape le symbole de l'actif, ex : XAUUSD (ou /annuler)")
+        return CHART_PAIR
+    return await _chart_finish(update, context, pair)
+
+
+async def _chart_finish(update: Update, context: ContextTypes.DEFAULT_TYPE, pair: str):
+    c = context.user_data.pop("chart")
+    try:
+        s = build_signal({"pair": pair, "direction": c["direction"], "entry": c["entry"], "sl": c["sl"],
+                          "tp": [c["tp"]], "note": c["note"]})
+    except ValueError as e:
+        await update.message.reply_text(f"❗ {escape(str(e))}\n\n{CHART_HELP}", parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+    s.update(photo=c["photo"], photo_bytes=c["photo_bytes"], quick=True, source="capture")
+    context.user_data["sig"] = s
+    context.user_data["_flow"] = False
+    warn = ("\n⚠️ Valeurs <b>estimées</b> d'après leur position sur le graphique : vérifie-les bien."
+            if c["estimated"] else "")
+    await update.message.reply_text(
+        f"🔎 <b>Lu sur ta capture</b> : <b>{escape(s['pair'])} {s['direction']}</b> @ {s['entry_text']} · "
+        f"SL {s['sl_text']} · TP {' / '.join(s['tps_text'])}{warn}{unknown_pair_warning(s['pair'])}\n\n"
+        f"✏️ Une erreur, ou d'autres TP ? Envoie la version corrigée, ex :\n"
+        f"<code>{escape(s['pair'])} {s['direction']} {s['entry_text']} SL {s['sl_text']} TP {s['tps_text'][0]}</code>",
+        parse_mode=ParseMode.HTML)
+    return await _show_preview(update, context)
+
+
+@admin_only
+async def sig_correct(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """À l'étape de l'aperçu : un signal tapé remplace le précédent, en gardant sa photo."""
+    old = context.user_data.get("sig") or {}
+    try:
+        s = parse_quick_signal(update.message.text)
+    except ValueError as e:
+        await update.message.reply_text(f"❗ {escape(str(e))}\n\n{QUICK_HELP}", parse_mode=ParseMode.HTML)
+        return CONFIRM
+    s.update(photo=old.get("photo"), photo_bytes=old.get("photo_bytes"), source=old.get("source", "manuel"))
+    if not s.get("note") and old.get("note"):
+        s["note"] = old["note"]
+    context.user_data["sig"] = s
+    await update.message.reply_text("✏️ Corrigé.")
+    return await _show_preview(update, context)
 
 
 async def sig_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2032,13 +2141,20 @@ def main():
     init_db()
     init_news_table()
     apply_settings()
+    try:
+        import chart_reader
+        log.info("📷 Lecture des captures TradingView : %s",
+                 "activée" if chart_reader.available() else "désactivée (installe tesseract-ocr sur le serveur)")
+    except ImportError:
+        log.info("📷 Lecture des captures TradingView : désactivée (numpy / pytesseract absents)")
     app = Application.builder().token(BOT_TOKEN).post_init(start_api).post_shutdown(stop_api).build()
     private = filters.ChatType.PRIVATE
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("signal", sig_start, filters=private),
                       MessageHandler(private & filters.TEXT & ~filters.COMMAND & filters.Regex(QUICK_RE), quick_signal),
-                      MessageHandler(private & filters.PHOTO & filters.CaptionRegex(QUICK_RE), quick_signal)],
+                      MessageHandler(private & filters.PHOTO & filters.CaptionRegex(QUICK_RE), quick_signal),
+                      MessageHandler(private & ~filters.FORWARDED & (filters.PHOTO | filters.Document.IMAGE), chart_signal)],
         states={
             PAIR: [CallbackQueryHandler(sig_pair_cb, pattern=r"^pair:"),
                    CallbackQueryHandler(sig_pair_category, pattern=r"^cat:"),
@@ -2052,7 +2168,9 @@ def main():
             PHOTO: [MessageHandler(filters.PHOTO, sig_photo), CommandHandler("passer", sig_skip_photo),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, sig_photo_missing)],
             NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, sig_note), CommandHandler("passer", sig_note)],
-            CONFIRM: [CallbackQueryHandler(sig_confirm, pattern=r"^ok:")],
+            CONFIRM: [CallbackQueryHandler(sig_confirm, pattern=r"^ok:"),
+                      MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(QUICK_RE), sig_correct)],
+            CHART_PAIR: [MessageHandler(filters.TEXT & ~filters.COMMAND, chart_pair_text)],
         },
         fallbacks=[CommandHandler("annuler", sig_cancel)],
         conversation_timeout=15 * 60,

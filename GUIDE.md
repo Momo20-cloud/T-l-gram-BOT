@@ -32,6 +32,22 @@ Le robot répond « ✅ Compris », te demande la **photo** (ou /passer), puis m
 
 Les virgules décimales (`2650,5`, `1,0850`) sont acceptées. Le robot vérifie que le SL et les TP sont du bon côté, et t'explique l'erreur sinon. Le mode pas à pas (`/signal` puis les boutons) existe toujours.
 
+### 📷 Capture TradingView : le robot lit les niveaux
+
+1. Sur TradingView, place ton trade avec l'outil **Position longue** ou **Position courte**.
+2. Fais une capture où l'on voit **l'outil en entier** et **l'échelle de prix à droite**.
+3. Envoie-la au robot, sans rien taper. Le robot lit :
+   - la direction (zone verte au-dessus = BUY, en dessous = SELL) ;
+   - l'entrée, le SL et le TP ;
+   - l'actif, dans l'en-tête du graphique.
+4. Il te montre l'aperçu, puis tu publies d'un clic.
+
+Astuces :
+- **Pour plus de précision**, envoie la capture **en fichier** (📎 → Fichier) plutôt qu'en photo : Telegram compresse les photos.
+- **Si l'actif n'apparaît pas** sur la capture, écris-le en légende (`XAUUSD`). Le reste de la légende devient ton analyse.
+- **Pour corriger une valeur ou ajouter des TP**, envoie simplement le signal corrigé en texte au moment de l'aperçu (`XAUUSD BUY 2650 SL 2644 TP 2660 2670`). Le robot garde la photo.
+- **Les valeurs marquées « estimées »** sont déduites de la position des zones sur le graphique, à environ un pixel près : vérifie-les avant de publier.
+
 ### Commandes
 
 | Commande | Rôle |
