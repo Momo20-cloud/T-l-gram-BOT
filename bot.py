@@ -37,6 +37,7 @@ from telegram.ext import (
     filters,
 )
 
+import instruments as I
 import templates as T
 
 load_dotenv()
@@ -127,7 +128,10 @@ def utc_now_str() -> str:
 
 # ================================================================ calculs
 def pip_size(pair: str) -> float:
-    p = pair.upper()
+    p = I.normalize(pair)
+    known = I.pip_size(p)
+    if known is not None:
+        return known
     for k, v in T.PIP_SIZES.items():
         if p.startswith(k):
             return v
@@ -338,8 +342,7 @@ async def cmd_accueil(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sig_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["sig"] = {}
     context.user_data["_flow"] = True
-    rows = [[InlineKeyboardButton(p, callback_data=f"pair:{p}") for p in QUICK_PAIRS[i:i + 2]]
-            for i in range(0, len(QUICK_PAIRS), 2)]
+    rows = _pairs_kb_rows()
     await update.message.reply_text(
         "📊 <b>Nouveau signal</b>\n\n"
         "⚡ <b>Mode rapide</b> : envoie tout en un message, ex :\n"
@@ -351,10 +354,40 @@ async def sig_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return PAIR
 
 
+def _pairs_kb_rows():
+    """Actifs favoris (QUICK_PAIRS) + un bouton par catégorie du catalogue."""
+    fav = [I.normalize(p) for p in QUICK_PAIRS]
+    rows = [[InlineKeyboardButton(p, callback_data=f"pair:{p}") for p in fav[i:i + 2]] for i in range(0, len(fav), 2)]
+    cats = [InlineKeyboardButton(label, callback_data=f"cat:{key}") for key, (label, _) in I.CATEGORIES.items()]
+    return rows + [cats[i:i + 3] for i in range(0, len(cats), 3)]
+
+
+async def sig_pair_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    key = q.data.split(":", 1)[1]
+    if key == "back" or key not in I.CATEGORIES:
+        await q.edit_message_reply_markup(InlineKeyboardMarkup(_pairs_kb_rows()))
+        return PAIR
+    syms = I.category_symbols(key)
+    rows = [[InlineKeyboardButton(p, callback_data=f"pair:{p}") for p in syms[i:i + 4]] for i in range(0, len(syms), 4)]
+    rows.append([InlineKeyboardButton("⬅️ Retour", callback_data="cat:back")])
+    await q.edit_message_reply_markup(InlineKeyboardMarkup(rows))
+    return PAIR
+
+
+def unknown_pair_warning(pair: str) -> str:
+    if I.is_known(pair):
+        return ""
+    return (f"\n⚠️ <b>{escape(pair)}</b> n'est pas dans le catalogue : les pips seront calculés comme du Forex "
+            "(0.0001). Vérifie l'orthographe, ou ajoute l'actif dans instruments.py.")
+
+
 async def _ask_direction(msg, pair):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🟢 BUY", callback_data="dir:BUY"),
                                 InlineKeyboardButton("🔴 SELL", callback_data="dir:SELL")]])
-    await msg.reply_text(f"✅ {pair}\n\n2️⃣ Direction ?", reply_markup=kb)
+    await msg.reply_text(f"✅ {escape(pair)}{unknown_pair_warning(pair)}\n\n2️⃣ Direction ?", reply_markup=kb,
+                         parse_mode=ParseMode.HTML)
 
 
 async def sig_pair_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -370,7 +403,7 @@ async def sig_pair_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sig_pair_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if QUICK_RE.search(update.message.text or ""):
         return await quick_signal(update, context)
-    pair = re.sub(r"[^A-Z0-9./]", "", update.message.text.upper())[:15]
+    pair = I.normalize(update.message.text)
     if not pair:
         await update.message.reply_text("Tape un symbole valide, ex : XAUUSD")
         return PAIR
@@ -635,7 +668,7 @@ async def quick_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kind = s["direction"] if s["order_type"] == "MARKET" else f"{s['direction']} {s['order_type']}"
     await msg.reply_text(
         f"✅ Compris : <b>{escape(s['pair'])} {kind}</b> @ {s['entry_text']} · SL {s['sl_text']} · "
-        f"TP {' / '.join(s['tps_text'])}\n\n📸 Envoie la <b>photo</b> du graphique, ou /passer",
+        f"TP {' / '.join(s['tps_text'])}{unknown_pair_warning(s['pair'])}\n\n📸 Envoie la <b>photo</b> du graphique, ou /passer",
         parse_mode=ParseMode.HTML)
     return PHOTO
 
@@ -1419,6 +1452,8 @@ def _num(v) -> tuple[str, float]:
 
 def parse_text_signal(txt: str) -> dict:
     """Format texte libre : 'XAUUSD BUY 2650 SL 2640 TP 2660 2670' (ou TP1 2660 TP2 2670)."""
+    txt = re.sub(r"(?i)\bS&P", "SP", txt)
+    txt = re.sub(r"\b([A-Za-z]{3,5})[/-]([A-Za-z]{3,4})\b", r"\1\2", txt)   # EUR/USD, BTC-USD -> EURUSD, BTCUSD
     toks = re.findall(r"[A-Za-zÀ-ÿ]+\d*|\d+(?:\.\d+)?", txt.upper())
     data, section, entry, tps, sl = {}, None, [], [], []
     for t in toks:
@@ -1442,7 +1477,7 @@ def parse_text_signal(txt: str) -> dict:
 
 def build_signal(d: dict) -> dict:
     """Transforme les données reçues de l'IA en signal validé (mêmes contrôles que /signal)."""
-    pair = re.sub(r"[^A-Z0-9./]", "", str(d.get("pair") or d.get("symbol") or d.get("ticker") or "").upper())[:15]
+    pair = I.normalize(d.get("pair") or d.get("symbol") or d.get("ticker") or "")
     if not pair:
         raise ValueError("champ 'pair' manquant (ex : XAUUSD)")
     raw_dir = str(d.get("direction") or d.get("side") or d.get("action") or "").strip().upper().replace("_", " ")
@@ -1750,6 +1785,7 @@ def main():
                       MessageHandler(private & filters.PHOTO & filters.CaptionRegex(QUICK_RE), quick_signal)],
         states={
             PAIR: [CallbackQueryHandler(sig_pair_cb, pattern=r"^pair:"),
+                   CallbackQueryHandler(sig_pair_category, pattern=r"^cat:"),
                    MessageHandler(filters.TEXT & ~filters.COMMAND, sig_pair_text)],
             DIRECTION: [CallbackQueryHandler(sig_direction, pattern=r"^dir:")],
             ORDER_TYPE: [CallbackQueryHandler(sig_order_type, pattern=r"^ot:")],

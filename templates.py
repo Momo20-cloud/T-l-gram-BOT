@@ -25,7 +25,8 @@ FOOTER = (
 )
 
 # --- Taille d'un pip par actif (utilisé pour calculer les résultats) --
-# La clé est le début du symbole. Ajoute tes actifs ici si besoin.
+# Le catalogue complet (≈ 120 actifs) est dans instruments.py.
+# Ici : seulement des compléments pour les actifs hors catalogue (la clé est le début du symbole).
 PIP_SIZES = {
     "XAU": 0.1,      # Or : 1 pip = 0.10 $
     "XAG": 0.01,     # Argent
