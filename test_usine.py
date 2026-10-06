@@ -205,29 +205,90 @@ if __name__ == "__main__":
 
 
 class SiteTests(unittest.TestCase):
+    def _get(self, port, path):
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+
     def test_page_is_filled_and_served(self):
-        import asyncio
         import re
         import usine
         page = usine.render_site("MaUsineBot").decode()
         self.assertEqual(re.findall(r"\{\{\w+\}\}", page), [])
         self.assertIn("https://t.me/MaUsineBot?start=site", page)
+        srv = usine.start_site(0)                       # port libre choisi par le système
+        try:
+            port = srv.server_address[1]
+            usine.SITE_STATE.update(bot_username="MaUsineBot", error=None)
+            code, body = self._get(port, "/")
+            self.assertEqual(code, 200)
+            self.assertIn("https://t.me/MaUsineBot?start=site", body)
+            code, body = self._get(port, "/health")
+            self.assertEqual(code, 200)
+            self.assertIn('"ok": true', body)
+            self.assertEqual(self._get(port, "/nope")[0], 404)
+            # erreur de configuration : la page reste en ligne et /health explique le problème
+            usine.SITE_STATE.update(bot_username=None, error="❌ USINE_BOT_TOKEN manquant")
+            self.assertEqual(self._get(port, "/")[0], 200)
+            code, body = self._get(port, "/health")
+            self.assertIn('"ok": false', body)
+            self.assertIn("USINE_BOT_TOKEN manquant", body)
+        finally:
+            srv.shutdown()
+            usine.SITE_STATE.update(bot_username=None, error=None)
 
-        async def go():
-            usine.PORT = 0
-            app = type("A", (), {"bot_data": {}})()
-            await usine.start_site(app, "MaUsineBot")
-            port = app.bot_data["site"].sockets[0].getsockname()[1]
-            out = {}
-            for path in ("/", "/health", "/nope"):
-                r, w = await asyncio.open_connection("127.0.0.1", port)
-                w.write(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
-                out[path] = (await r.read()).decode()
-                w.close()
-            app.bot_data["site"].close()
-            return out
-        out = asyncio.run(go())
-        self.assertTrue(out["/"].startswith("HTTP/1.1 200"))
-        self.assertIn("Créer mon robot", out["/"])
-        self.assertIn('"ok": true', out["/health"])
-        self.assertTrue(out["/nope"].startswith("HTTP/1.1 404"))
+    def test_page_answers_even_without_token(self):
+        """Comme sur Railway : jeton absent → la page répond quand même (pas « l'application n'a pas répondu »)."""
+        import socket
+        import urllib.request
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0))
+            port = sk.getsockname()[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {k: v for k, v in os.environ.items() if k != "USINE_BOT_TOKEN"}
+            env.update(PORT=str(port), DATA_DIR=tmp)
+            p = subprocess.Popen([sys.executable, os.path.join(HERE, "usine.py")], env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                for _ in range(100):
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as r:
+                            health = r.read().decode()
+                        break
+                    except OSError:
+                        time.sleep(0.1)
+                else:
+                    self.fail("la page n'a jamais répondu")
+                self.assertIn("USINE_BOT_TOKEN", health)
+                self.assertIsNone(p.poll())             # le service reste debout
+            finally:
+                p.kill()
+                p.wait()
+
+
+class LauncherTests(unittest.TestCase):
+    def _which(self, extra_env):
+        """Lance le vrai start.py à côté de faux bot.py / usine.py qui affichent leur nom."""
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copy(os.path.join(HERE, "start.py"), tmp)
+            for name in ("bot.py", "usine.py"):
+                with open(os.path.join(tmp, name), "w") as f:
+                    f.write(f"print('LANCÉ {name}')")
+            env = {k: v for k, v in os.environ.items() if k != "USINE_BOT_TOKEN"}
+            env.update(extra_env)
+            r = subprocess.run([sys.executable, os.path.join(tmp, "start.py")], env=env,
+                               capture_output=True, text=True, timeout=30)
+        return r.stdout.strip().splitlines()[-1].replace("LANCÉ ", "")
+
+    def test_vip_service_still_runs_bot(self):
+        self.assertEqual(self._which({}), "bot.py")
+
+    def test_factory_service_runs_usine(self):
+        self.assertEqual(self._which({"USINE_BOT_TOKEN": "123:abc"}), "usine.py")
+
+
