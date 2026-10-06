@@ -250,7 +250,7 @@ def admin_only(func):
 
 
 # ================================================================ commandes simples
-HELP = """🤖 <b>Robot ANONYMETRADER VIP</b>
+HELP = f"""🤖 <b>Robot {T.escape(T.BRAND)}</b>
 
 <b>Signaux</b>
 /signal — créer et publier un nouveau signal
