@@ -318,3 +318,78 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self._which({"USINE_BOT_TOKEN": "123:abc"}), "usine.py")
 
 
+
+
+class SalesBotMenuTests(unittest.TestCase):
+    """Accueil et boutons du robot de vente (Telegram simulé)."""
+
+    def setUp(self):
+        import usine
+        from unittest.mock import AsyncMock, MagicMock
+        self.usine, self.AsyncMock, self.MagicMock = usine, AsyncMock, MagicMock
+        self.tmp = tempfile.TemporaryDirectory()
+        usine.STORE = ClientStore(os.path.join(self.tmp.name, "usine.db"))
+        usine.SUP = Supervisor(usine.STORE, self.tmp.name, os.path.join(self.tmp.name, "absent.py"))
+        self.ctx = MagicMock()
+        self.ctx.bot_data = {}
+        self.ctx.user_data = {}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _update(self, uid=10, data=None):
+        u = self.MagicMock()
+        u.effective_user.id = uid
+        u.effective_user.first_name = "Momo"
+        msg = u.effective_message
+        msg.reply_text, msg.reply_photo = self.AsyncMock(), self.AsyncMock()
+        msg.reply_photo.return_value.photo = [self.MagicMock(file_id="BANNIERE")]
+        u.message = msg
+        if data:
+            u.callback_query.data = data
+            u.callback_query.answer = self.AsyncMock()
+        else:
+            u.callback_query = None
+        return u
+
+    @staticmethod
+    def _buttons(markup):
+        return [b.callback_data or b.url for row in markup.inline_keyboard for b in row]
+
+    def test_new_visitor_gets_banner_and_create_button(self):
+        import asyncio
+        u = self._update()
+        asyncio.run(self.usine.cmd_start(u, self.ctx))
+        call = u.effective_message.reply_photo.call_args
+        self.assertIn("jours d'essai gratuit", call.kwargs["caption"])
+        self.assertIn("menu:creer", self._buttons(call.kwargs["reply_markup"]))
+        self.assertEqual(self.ctx.bot_data["banner_id"], "BANNIERE")   # réutilisée ensuite
+
+    def test_returning_client_sees_status_and_my_bot(self):
+        import asyncio
+        self.usine.STORE.add(10, TOKEN_A, "alpha_bot", "-1001", "ALPHA", trial_days=7)
+        u = self._update()
+        asyncio.run(self.usine.cmd_start(u, self.ctx))
+        text = u.effective_message.reply_text.call_args_list[0].args[0]
+        self.assertIn("Bon retour Momo", text)
+        self.assertIn("@alpha_bot", text)
+        self.assertIn("menu:mon", self._buttons(u.effective_message.reply_text.call_args_list[0].kwargs["reply_markup"]))
+
+    def test_menu_buttons(self):
+        import asyncio
+        self.usine.STORE.add(10, TOKEN_A, "alpha_bot", "-1001", "ALPHA", trial_days=7)
+        for data, expected in (("menu:aide", "Comment ça marche"), ("menu:support", "Support")):
+            u = self._update(data=data)
+            asyncio.run(self.usine.on_menu(u, self.ctx))
+            u.callback_query.answer.assert_awaited()
+            self.assertIn(expected, u.effective_message.reply_text.call_args.args[0])
+        u = self._update(data="menu:mon")
+        asyncio.run(self.usine.on_menu(u, self.ctx))
+        self.assertIn("https://t.me/alpha_bot", self._buttons(u.effective_message.reply_text.call_args.kwargs["reply_markup"]))
+
+    def test_create_from_button_starts_signup(self):
+        import asyncio
+        u = self._update(uid=99, data="menu:creer")
+        state = asyncio.run(self.usine.creer_start(u, self.ctx))
+        self.assertEqual(state, self.usine.C_TOKEN)
+        self.assertIn("Étape 1/3", u.effective_message.reply_text.call_args.args[0])

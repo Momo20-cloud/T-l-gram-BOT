@@ -52,6 +52,9 @@ OPEN_SIGNUP = os.getenv("OPEN_SIGNUP", "true").lower() in ("1", "true", "oui", "
 SUPPORT_CONTACT = os.getenv("SUPPORT_CONTACT", "").strip()
 SITE_NAME = os.getenv("SITE_NAME", "").strip() or "Anonymetrader Signals"
 PORT = int(os.getenv("PORT", "8080") or 8080)    # Railway le fournit : la page de vente est servie dessus
+SITE_URL = os.getenv("SITE_URL", "").strip() or (
+    f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}" if os.getenv("RAILWAY_PUBLIC_DOMAIN") else "")
+BANNER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brand", "banniere-description.png")
 SITE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site", "index.html")
 CLIENT_SCRIPT = os.getenv("CLIENT_SCRIPT") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.py")
 
@@ -223,50 +226,124 @@ def is_owner(update: Update) -> bool:
 
 
 # ================================================================ commandes client
-PRICE_LINE = f"Ensuite : <b>{PRICE_STARS} ⭐ / {SUB_DAYS} jours</b>." if PRICE_STARS else ""
-WELCOME = f"""🏭 <b>Crée ton robot de signaux Telegram</b>
+PRICE_LINE = f"puis <b>{PRICE_STARS} ⭐ / {SUB_DAYS} jours</b>, sans engagement" if PRICE_STARS else ""
+WELCOME = f"""💎 <b>{escape(SITE_NAME)}</b>
 
-Publie tes signaux de trading dans ton canal avec photo, suivi TP/SL, bilans automatiques et annonces économiques.
+Ton propre robot de signaux Telegram, à ton nom, prêt en 3 minutes.
 
-🎁 <b>{TRIAL_DAYS} jours d'essai gratuit</b>, sans carte bancaire.
-{PRICE_LINE}
+📊 Signaux soignés en un seul message
+🎯 Suivi TP / SL et clôtures partielles en un clic
+📈 Bilans automatiques jour, semaine, mois
+🖼 Ta marque sur chaque photo
 
-/creer — créer ton robot (3 minutes)
-/monrobot — état de ton robot et abonnement
-/abonner — prolonger ton abonnement
-/paysupport — aide sur un paiement"""
+🎁 <b>{TRIAL_DAYS} jours d'essai gratuit</b>{", " + PRICE_LINE if PRICE_LINE else ""}."""
 
-OWNER_HELP = """
-<b>Commandes propriétaire</b>
+HOW_IT_WORKS = f"""🧭 <b>Comment ça marche</b>
+
+<b>1. Crée ton robot</b> sur @BotFather (/newbot) et colle-moi son jeton.
+<b>2. Branche ton canal</b> : ajoute ton robot comme administrateur.
+<b>3. Choisis ta marque</b> : le nom affiché sur tes signaux.
+
+Ensuite, tout se passe dans <b>ton</b> robot :
+• envoie <code>XAUUSD BUY 2650 SL 2645 TP 2655 2660</code> → aperçu → publié
+• boutons TP1 / TP2 / SL / BE pour le suivi
+• /bilan, /news, /reglages
+
+🎁 {TRIAL_DAYS} jours gratuits, sans carte bancaire. Sans paiement, ton robot se met en pause et ton historique est conservé."""
+
+OWNER_HELP = """🛠 <b>Espace propriétaire</b>
 /clients — liste de tous les clients
 /prolonger <code>ID JOURS</code> — ajouter des jours (paiement manuel)
 /suspendre <code>ID</code> · /reactiver <code>ID</code>
-/supprimer <code>ID</code> — arrêter et retirer un client (ses données restent sur le disque)
+/supprimer <code>ID</code> — arrêter et retirer un client
 /journal <code>ID</code> — dernières lignes du journal de son robot"""
 
 
+def main_menu_kb(has_bot: bool = False) -> InlineKeyboardMarkup:
+    b = InlineKeyboardButton
+    rows = [[b("🤖 Mon robot", callback_data="menu:mon") if has_bot else b("🚀 Créer mon robot", callback_data="menu:creer")],
+            [b("⭐ Abonnement", callback_data="menu:abo"), b("🧭 Comment ça marche", callback_data="menu:aide")],
+            [b("💬 Support", callback_data="menu:support")]]
+    if SITE_URL:
+        rows[-1].append(b("🌐 Site", url=SITE_URL))
+    return InlineKeyboardMarkup(rows)
+
+
+def open_bot_kb(c: dict, with_pay: bool = True) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f"📲 Ouvrir @{c['bot_username']}", url=f"https://t.me/{c['bot_username']}")]]
+    pay = pay_kb(c["id"]) if with_pay else None
+    if pay:
+        rows += pay.inline_keyboard
+    return InlineKeyboardMarkup(rows)
+
+
+async def _ack(update: Update):
+    """Répond au bouton (fait disparaître le sablier) ; renvoie le message où écrire."""
+    if update.callback_query:
+        await update.callback_query.answer()
+    return update.effective_message
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = WELCOME + (OWNER_HELP if is_owner(update) else "")
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    msg = await _ack(update)
+    mine = STORE.by_owner(update.effective_user.id)
+    text = WELCOME
+    if mine:
+        name = escape(update.effective_user.first_name or "")
+        text = f"👋 <b>Bon retour {name} !</b>\n\n" + "\n\n".join(client_line(c) for c in mine)
+    kb = main_menu_kb(bool(mine))
+    sent = False
+    if not mine and os.path.exists(BANNER_FILE):
+        try:
+            photo = context.bot_data.get("banner_id") or open(BANNER_FILE, "rb")
+            m = await msg.reply_photo(photo, caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            context.bot_data["banner_id"] = m.photo[-1].file_id    # envoyée une seule fois, ensuite réutilisée
+            sent = True
+        except TelegramError as e:
+            log.warning("Bannière d'accueil non envoyée : %s", e)
+    if not sent:
+        await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    if is_owner(update):
+        await msg.reply_text(OWNER_HELP, parse_mode=ParseMode.HTML)
+
+
+async def cmd_aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await _ack(update)
+    has_bot = bool(STORE.by_owner(update.effective_user.id))
+    await msg.reply_text(HOW_IT_WORKS, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(has_bot))
+
+
+async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    action = update.callback_query.data.split(":", 1)[1]
+    handler = {"mon": cmd_monrobot, "abo": cmd_abonner, "aide": cmd_aide, "support": cmd_paysupport}.get(action)
+    if handler:
+        await handler(update, context)
+    else:
+        await update.callback_query.answer()
 
 
 async def cmd_monrobot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await _ack(update)
     mine = STORE.by_owner(update.effective_user.id)
     if not mine:
-        await update.message.reply_text("Tu n'as pas encore de robot. Tape /creer pour commencer.")
+        await msg.reply_text("Tu n'as pas encore de robot.", reply_markup=main_menu_kb(False))
         return
     for c in mine:
-        await update.message.reply_text(client_line(c), parse_mode=ParseMode.HTML, reply_markup=pay_kb(c["id"]))
+        await msg.reply_text(client_line(c), parse_mode=ParseMode.HTML, reply_markup=open_bot_kb(c))
 
 
 async def cmd_abonner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await _ack(update)
     if PRICE_STARS <= 0:
-        await update.message.reply_text("Le paiement en ligne n'est pas encore ouvert. "
-                                        + (f"Contacte {SUPPORT_CONTACT}." if SUPPORT_CONTACT else ""))
+        await msg.reply_text("Le paiement en ligne n'est pas encore ouvert. "
+                             + (f"Contacte {SUPPORT_CONTACT}." if SUPPORT_CONTACT else ""))
         return
     mine = STORE.by_owner(update.effective_user.id)
     if not mine:
-        await update.message.reply_text("Crée d'abord ton robot avec /creer.")
+        await msg.reply_text(f"⭐ <b>Abonnement</b>\n\n🎁 {TRIAL_DAYS} jours d'essai gratuit, puis "
+                             f"<b>{PRICE_STARS} ⭐ / {SUB_DAYS} jours</b>, payable directement dans Telegram.\n"
+                             "Sans engagement : sans paiement, ton robot se met en pause et ton historique est conservé.",
+                             parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(False))
         return
     for c in mine:
         await send_invoice(context.bot, update.effective_chat.id, c)
@@ -324,8 +401,9 @@ async def on_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_paysupport(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💬 Un souci avec un paiement ? "
+    msg = await _ack(update)
+    await msg.reply_text(
+        "💬 <b>Support</b>\nUne question ou un souci avec un paiement ? "
         + (f"Écris à {SUPPORT_CONTACT} avec ton identifiant : " if SUPPORT_CONTACT else "Réponds ici avec ton identifiant : ")
         + f"<code>{update.effective_user.id}</code>", parse_mode=ParseMode.HTML)
     if not SUPPORT_CONTACT:
@@ -338,14 +416,15 @@ C_TOKEN, C_CHANNEL, C_BRAND = range(3)
 
 async def creer_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    msg = await _ack(update)
     if not OPEN_SIGNUP and uid not in OWNER_IDS:
-        await update.message.reply_text("Les inscriptions sont fermées pour le moment.")
+        await msg.reply_text("Les inscriptions sont fermées pour le moment.")
         return ConversationHandler.END
     if len(STORE.by_owner(uid)) >= MAX_BOTS_PER_USER and uid not in OWNER_IDS:
-        await update.message.reply_text("Tu as déjà ton robot. Tape /monrobot pour le voir.")
+        await msg.reply_text("Tu as déjà ton robot 👇", reply_markup=main_menu_kb(True))
         return ConversationHandler.END
     context.user_data.clear()
-    await update.message.reply_text(
+    await msg.reply_text(
         "🧩 <b>Étape 1/3 — Ton robot</b>\n\n"
         "1. Ouvre @BotFather et envoie /newbot\n"
         "2. Choisis un nom et un identifiant (finissant par « bot »)\n"
@@ -436,7 +515,8 @@ async def creer_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎉 <b>C'est prêt !</b>\n\n{client_line(c)}\n\n"
         f"👉 Ouvre @{escape(c['bot_username'])} et tape /start : il te montre toutes ses commandes "
         "(/signal, /bilan, /news…).\n"
-        f"🎁 Essai gratuit de {TRIAL_DAYS} jours. Je te préviens avant la fin.", parse_mode=ParseMode.HTML)
+        f"🎁 Essai gratuit de {TRIAL_DAYS} jours. Je te préviens avant la fin.", parse_mode=ParseMode.HTML,
+        reply_markup=open_bot_kb(c, with_pay=False))
     await notify_owners(context.bot, f"🆕 Nouveau client\n{client_line(c, admin=True)}")
     return ConversationHandler.END
 
@@ -648,10 +728,17 @@ def _fail_but_keep_page(message: str):
 
 async def post_init(app: Application):
     try:
-        await app.bot.set_my_commands([("creer", "Créer mon robot"), ("monrobot", "Mon robot et mon abonnement"),
-                                       ("abonner", "Prolonger mon abonnement"), ("paysupport", "Aide paiement")])
+        await app.bot.set_my_commands([("start", "Accueil"), ("creer", "Créer mon robot"),
+                                       ("monrobot", "Mon robot et mon abonnement"), ("abonner", "Abonnement"),
+                                       ("aide", "Comment ça marche"), ("paysupport", "Support")])
+        # Profil du robot : texte affiché avant « Démarrer » et dans sa fiche
+        await app.bot.set_my_description(
+            f"💎 {SITE_NAME}\n\nCrée ton propre robot de signaux Telegram en 3 minutes : signaux à ta marque, "
+            f"suivi TP/SL en un clic, bilans automatiques.\n\n🎁 {TRIAL_DAYS} jours d'essai gratuit, sans carte bancaire.")
+        await app.bot.set_my_short_description(
+            f"Ton robot de signaux Telegram à ta marque. {TRIAL_DAYS} jours gratuits." + (f" {SITE_URL}" if SITE_URL else ""))
     except TelegramError as e:
-        log.warning("Menu des commandes non mis à jour : %s", e)
+        log.warning("Profil du robot non mis à jour : %s", e)
     SITE_STATE.update(bot_username=app.bot.username, error=None)
     SUP.sync()
     log.info("🏭 Usine démarrée — %s robots clients en marche", len(SUP.procs))
@@ -694,7 +781,8 @@ def build_app() -> Application:
     private = filters.ChatType.PRIVATE
     txt = filters.TEXT & ~filters.COMMAND
     app.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("creer", creer_start, filters=private)],
+        entry_points=[CommandHandler("creer", creer_start, filters=private),
+                      CallbackQueryHandler(creer_start, pattern=r"^menu:creer$")],
         states={
             C_TOKEN: [MessageHandler(txt, creer_token)],
             C_CHANNEL: [MessageHandler((txt | filters.FORWARDED) & ~filters.COMMAND, creer_channel)],
@@ -703,12 +791,13 @@ def build_app() -> Application:
         fallbacks=[CommandHandler("annuler", creer_cancel)],
         conversation_timeout=20 * 60,
     ))
-    for name, fn in (("start", cmd_start), ("aide", cmd_start), ("monrobot", cmd_monrobot), ("abonner", cmd_abonner),
+    for name, fn in (("start", cmd_start), ("aide", cmd_aide), ("monrobot", cmd_monrobot), ("abonner", cmd_abonner),
                      ("paysupport", cmd_paysupport), ("clients", cmd_clients), ("prolonger", cmd_prolonger),
                      ("suspendre", cmd_suspendre), ("reactiver", cmd_reactiver), ("supprimer", cmd_supprimer),
                      ("journal", cmd_journal)):
         app.add_handler(CommandHandler(name, fn, filters=private))
     app.add_handler(CallbackQueryHandler(on_pay_button, pattern=r"^pay:\d+$"))
+    app.add_handler(CallbackQueryHandler(on_menu, pattern=r"^menu:"))
     app.add_handler(PreCheckoutQueryHandler(on_precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_paid))
     app.job_queue.run_repeating(job_supervise, interval=30, first=30, name="supervise")
