@@ -19,7 +19,7 @@ XAUUSD BUY 2650 SL 2645 TP 2655 2660 2670
 Cassure résistance H1, RSI > 50          ← analyse (optionnelle) sur la 2e ligne
 ```
 
-Le robot répond « ✅ Compris », te demande la **photo** (ou /passer), puis montre l'**aperçu** avec ✅ Publier / ❌ Annuler.
+Le robot répond « ✅ Compris », te demande la **photo** (ou /passer), puis montre l'**aperçu** avec ✅ Publier / ✏️ Modifier / ❌ Annuler.
 **Encore plus rapide :** envoie la photo du graphique avec ce texte **en légende** → aperçu direct.
 
 | Ce que tu veux | Exemple |
@@ -37,15 +37,16 @@ Les virgules décimales (`2650,5`, `1,0850`) sont acceptées. Le robot vérifie 
 1. Sur TradingView, place ton trade avec l'outil **Position longue** ou **Position courte**.
 2. Fais une capture où l'on voit **l'outil en entier** et **l'échelle de prix à droite**.
 3. Envoie-la au robot, sans rien taper. Le robot lit :
-   - la direction (zone verte au-dessus = BUY, en dessous = SELL) ;
-   - l'entrée, le SL et le TP ;
+   - la direction (zone de profit au-dessus = BUY, en dessous = SELL), **quelles que soient tes couleurs** ;
+   - l'entrée, le SL et **tous les TP** (TP1, TP2… tracés en lignes jusqu'à la zone de profit) ;
    - l'actif, dans l'en-tête du graphique.
 4. Il te montre l'aperçu, puis tu publies d'un clic.
 
 Astuces :
 - **Pour plus de précision**, envoie la capture **en fichier** (📎 → Fichier) plutôt qu'en photo : Telegram compresse les photos.
 - **Si l'actif n'apparaît pas** sur la capture, écris-le en légende (`XAUUSD`). Le reste de la légende devient ton analyse.
-- **Pour corriger une valeur ou ajouter des TP**, envoie simplement le signal corrigé en texte au moment de l'aperçu (`XAUUSD BUY 2650 SL 2644 TP 2660 2670`). Le robot garde la photo.
+- **Pour corriger une valeur**, appuie sur **✏️ Modifier** sous l'aperçu : choisis le champ (Entrée, SL, TP, Sens, Actif, Analyse) et tape la nouvelle valeur. Le robot revérifie tout et te remontre l'aperçu, avec la même photo.
+- **Tu peux aussi** envoyer le signal corrigé en texte au moment de l'aperçu (`XAUUSD BUY 2650 SL 2644 TP 2660 2670`). Le robot garde la photo.
 - **Les valeurs marquées « estimées »** sont déduites de la position des zones sur le graphique, à environ un pixel près : vérifie-les avant de publier.
 
 ### Commandes

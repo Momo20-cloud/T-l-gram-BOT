@@ -605,8 +605,9 @@ async def sig_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = context.user_data["sig"]
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Publier", callback_data="ok:publish"),
-                                InlineKeyboardButton("❌ Annuler", callback_data="ok:cancel")]])
-    await update.message.reply_text("👀 <b>Aperçu</b> — voici ce qui sera publié :", parse_mode=ParseMode.HTML)
+                                InlineKeyboardButton("❌ Annuler", callback_data="ok:cancel")],
+                               [InlineKeyboardButton("✏️ Modifier", callback_data="ok:edit")]])
+    await update.effective_message.reply_text("👀 <b>Aperçu</b> — voici ce qui sera publié :", parse_mode=ParseMode.HTML)
     await _send_post(context.bot, update.effective_chat.id, s, _next_id(), markup=kb)
     return CONFIRM
 
@@ -723,14 +724,16 @@ async def chart_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     cap_pair, note = _pairs_in(msg.caption or "")
     context.user_data["chart"] = {
-        "direction": r.direction, "entry": r.fmt(r.entry), "sl": r.fmt(r.sl), "tp": r.fmt(r.tp),
+        "direction": r.direction, "entry": r.fmt(r.entry), "sl": r.fmt(r.sl),
+        "tp": [r.fmt(t) for t in (r.tps or [r.tp])], "guessed": r.direction_guessed,
         "estimated": [k for k in ("entry", "sl", "tp") if not r.exact.get(k)], "note": note or None,
         "photo": photo_id, "photo_bytes": None if photo_id else raw,
     }
     await wait.delete()
     pair = cap_pair or r.pair
     if not pair:
-        await msg.reply_text(f"🔎 Lu : <b>{r.direction}</b> @ {r.fmt(r.entry)} · SL {r.fmt(r.sl)} · TP {r.fmt(r.tp)}\n\n"
+        await msg.reply_text(f"🔎 Lu : <b>{r.direction}</b> @ {r.fmt(r.entry)} · SL {r.fmt(r.sl)} · "
+                             f"TP {' / '.join(context.user_data['chart']['tp'])}\n\n"
                              "❓ Je n'ai pas trouvé le nom de l'actif. Lequel est-ce ? (ex : XAUUSD)", parse_mode=ParseMode.HTML)
         return CHART_PAIR
     return await _chart_finish(update, context, pair)
@@ -748,7 +751,7 @@ async def _chart_finish(update: Update, context: ContextTypes.DEFAULT_TYPE, pair
     c = context.user_data.pop("chart")
     try:
         s = build_signal({"pair": pair, "direction": c["direction"], "entry": c["entry"], "sl": c["sl"],
-                          "tp": [c["tp"]], "note": c["note"]})
+                          "tp": c["tp"], "note": c["note"]})
     except ValueError as e:
         await update.message.reply_text(f"❗ {escape(str(e))}\n\n{CHART_HELP}", parse_mode=ParseMode.HTML)
         return ConversationHandler.END
@@ -757,11 +760,13 @@ async def _chart_finish(update: Update, context: ContextTypes.DEFAULT_TYPE, pair
     context.user_data["_flow"] = False
     warn = ("\n⚠️ Valeurs <b>estimées</b> d'après leur position sur le graphique : vérifie-les bien."
             if c["estimated"] else "")
+    if c.get("guessed"):
+        warn += "\n⚠️ Je n'ai pas pu dire avec certitude quelle zone est le profit : vérifie le <b>sens</b>."
     await update.message.reply_text(
         f"🔎 <b>Lu sur ta capture</b> : <b>{escape(s['pair'])} {s['direction']}</b> @ {s['entry_text']} · "
         f"SL {s['sl_text']} · TP {' / '.join(s['tps_text'])}{warn}{unknown_pair_warning(s['pair'])}\n\n"
-        f"✏️ Une erreur, ou d'autres TP ? Envoie la version corrigée, ex :\n"
-        f"<code>{escape(s['pair'])} {s['direction']} {s['entry_text']} SL {s['sl_text']} TP {s['tps_text'][0]}</code>",
+        f"✏️ Une erreur ? Appuie sur <b>Modifier</b> sous l'aperçu, ou envoie la version corrigée, ex :\n"
+        f"<code>{escape(s['pair'])} {s['direction']} {s['entry_text']} SL {s['sl_text']} TP {' '.join(s['tps_text'])}</code>",
         parse_mode=ParseMode.HTML)
     return await _show_preview(update, context)
 
@@ -783,10 +788,85 @@ async def sig_correct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _show_preview(update, context)
 
 
+# ---------------------------------------------------------------- modifier le signal avant de publier
+EDIT_VALUE = 31
+EDIT_FIELDS = {
+    "entry": ("Entrée", "le prix d'entrée (ou une zone : <code>2648 2652</code>)"),
+    "sl": ("SL", "le nouveau SL"),
+    "tp": ("TP", "les TP séparés par des espaces (1 à 5), ex : <code>2660 2670 2680</code>"),
+    "dir": ("Sens", "le sens : <code>BUY</code> ou <code>SELL</code> (le SL et le TP sont échangés)"),
+    "pair": ("Actif", "l'actif, ex : <code>XAUUSD</code>"),
+    "note": ("Analyse", "l'analyse (ou <code>-</code> pour l'enlever)"),
+}
+EDIT_MENU = InlineKeyboardMarkup(
+    [[InlineKeyboardButton(EDIT_FIELDS[k][0], callback_data=f"edit:{k}") for k in ("entry", "sl", "tp")],
+     [InlineKeyboardButton(EDIT_FIELDS[k][0], callback_data=f"edit:{k}") for k in ("dir", "pair", "note")],
+     [InlineKeyboardButton("↩️ Retour à l'aperçu", callback_data="edit:back")]])
+
+
+def edit_signal(s: dict, field: str, value: str) -> dict:
+    """Signal modifié sur un champ, revalidé (lève ValueError). Photo, type d'ordre et validité sont gardés."""
+    value = re.sub(r"\b(\d),(\d+)\b", r"\1.\2", value.strip())
+    d = {"pair": s["pair"], "direction": s["direction"], "order_type": s.get("order_type") or "MARKET",
+         "entry": s["entry_text"].replace("–", " "), "sl": s["sl_text"], "tp": list(s["tps_text"]), "note": s.get("note")}
+    if field == "dir":
+        word = DIR_WORDS.get(value.split()[0].upper()) if value.split() else None
+        if not word:
+            raise ValueError("écris BUY ou SELL")
+        if word != s["direction"]:              # zones inversées : le SL devient le TP et inversement
+            if len(d["tp"]) != 1:
+                raise ValueError("avec plusieurs TP, renvoie le signal complet, ex : XAUUSD SELL 2650 SL 2655 TP 2640 2630")
+            d["direction"], d["sl"], d["tp"] = word, d["tp"][0], [d["sl"]]
+    elif field == "tp":
+        d["tp"] = value
+    elif field == "note":
+        d["note"] = None if value in ("-", "/passer") else value[:300]
+    else:
+        d[field] = value
+    new = build_signal(d)
+    for k in ("photo", "photo_bytes", "expires_at", "source", "quick", "ref"):
+        if k in s:
+            new[k] = s[k]
+    return new
+
+
+async def sig_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_reply_markup(None)
+    field = q.data.split(":", 1)[1]
+    if field == "back" or "sig" not in context.user_data:
+        return await _show_preview(update, context)
+    context.user_data["edit_field"] = field
+    await q.message.reply_text(f"✏️ Envoie {EDIT_FIELDS[field][1]}", parse_mode=ParseMode.HTML)
+    return EDIT_VALUE
+
+
+@admin_only
+async def sig_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    field = context.user_data.get("edit_field")
+    s = context.user_data.get("sig")
+    if not field or not s:
+        return ConversationHandler.END
+    try:
+        new = edit_signal(s, field, update.message.text or "")
+    except ValueError as e:
+        await update.message.reply_text(f"❗ {escape(str(e))}\nRéessaie, ou choisis un autre champ :",
+                                        reply_markup=EDIT_MENU, parse_mode=ParseMode.HTML)
+        return EDIT_VALUE
+    context.user_data["sig"] = new
+    context.user_data.pop("edit_field", None)
+    await update.message.reply_text(f"✅ {EDIT_FIELDS[field][0]} modifié.")
+    return await _show_preview(update, context)
+
+
 async def sig_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     await q.edit_message_reply_markup(None)
+    if q.data == "ok:edit":
+        await q.message.reply_text("✏️ Que veux-tu modifier ?", reply_markup=EDIT_MENU)
+        return CONFIRM
     if q.data == "ok:cancel":
         context.user_data.pop("sig", None)
         await q.message.reply_text("🗑️ Signal annulé.")
@@ -2169,8 +2249,11 @@ def main():
                     MessageHandler(filters.TEXT & ~filters.COMMAND, sig_photo_missing)],
             NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, sig_note), CommandHandler("passer", sig_note)],
             CONFIRM: [CallbackQueryHandler(sig_confirm, pattern=r"^ok:"),
+                      CallbackQueryHandler(sig_edit_field, pattern=r"^edit:"),
                       MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(QUICK_RE), sig_correct)],
             CHART_PAIR: [MessageHandler(filters.TEXT & ~filters.COMMAND, chart_pair_text)],
+            EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, sig_edit_value),
+                         CallbackQueryHandler(sig_edit_field, pattern=r"^edit:")],
         },
         fallbacks=[CommandHandler("annuler", sig_cancel)],
         conversation_timeout=15 * 60,
