@@ -11,3 +11,8 @@ Format : 1080×1920 (vertical), 31 s, 30 images/s, H.264 + AAC.
 2. Capture chaque image avec Playwright (`window.render(t)` pour t = 0 → 31 s, à 30 images/s).
 3. `python soundtrack.py musique.wav 31` génère la bande-son, composée par programme (libre de droits).
 4. Assemble : `ffmpeg -framerate 30 -i f%05d.jpg -i musique.wav -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest video.mp4`
+
+## Vidéo « capture → signal » (20 s)
+
+- `capture-avec-musique.mp4` / `capture-sans-son.mp4` : la nouvelle fonction, une capture TradingView envoyée au robot devient un signal.
+- Animation : `capture.html` (même méthode que ci-dessus, avec `capture-exemple.jpg`, durée 20 s).
