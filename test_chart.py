@@ -92,6 +92,13 @@ class ReadCaptureTests(unittest.TestCase):
         self.assertEqual((r.fmt(r.entry), r.fmt(r.sl), r.fmt(r.tp)), ("4163.285", "4154.141", "4227.982"))
         self.assertEqual(sorted(r.exact), ["entry", "sl", "tp"])
 
+    def test_two_targets_and_gray_stop_zone(self):
+        """Vraie capture : zone de profit pêche, zone de stop GRISE, deux lignes de TP (TP1 et TP2)."""
+        r = C.read_position_tool(load("tv_reel_xauusd_2tp_gris.jpg"))
+        self.assertEqual((r.pair, r.direction), ("XAUUSD", "BUY"))
+        self.assertEqual((r.fmt(r.entry), r.fmt(r.sl)), ("4163.285", "4154.141"))
+        self.assertEqual([r.fmt(t) for t in r.tps], ["4218.060", "4228.111"])
+
     def test_image_without_tool_is_refused(self):
         with self.assertRaises(C.ChartReadError):
             C.read_position_tool(load("tv_sans_outil.jpg"))
@@ -133,6 +140,7 @@ class BotFlowTests(unittest.TestCase):
         m = u.message
         m.text, m.caption = text, caption
         m.reply_text = AsyncMock(return_value=MagicMock(edit_text=AsyncMock(), delete=AsyncMock()))
+        u.effective_message = m
         if image is not None:
             m.photo = []
             f = MagicMock()
@@ -161,6 +169,12 @@ class BotFlowTests(unittest.TestCase):
         self.assertEqual(s2["photo_bytes"], s["photo_bytes"])     # même photo
         self.assertEqual(s2["note"], "Cassure H1")
 
+    def test_capture_with_two_targets_keeps_both(self):
+        b = self.bot
+        upd = self._update(image=load("tv_reel_xauusd_2tp_gris.jpg"))
+        self.assertEqual(asyncio.run(b.chart_signal(upd, self.ctx)), b.CONFIRM)
+        self.assertEqual(self.ctx.user_data["sig"]["tps_text"], ["4218.060", "4228.111"])
+
     def test_unreadable_capture_explains_what_is_needed(self):
         b = self.bot
         upd = self._update(image=load("tv_sans_outil.jpg"))
@@ -168,6 +182,66 @@ class BotFlowTests(unittest.TestCase):
         self.assertEqual(state, b.ConversationHandler.END)
         wait = upd.message.reply_text.return_value
         self.assertIn("Position longue / courte", wait.edit_text.call_args.args[0])
+
+
+class EditBeforePublishTests(unittest.TestCase):
+    """Bouton ✏️ Modifier de l'aperçu : on change un champ, le signal est revalidé, la photo est gardée."""
+
+    def setUp(self):
+        os.environ.update(ADMIN_IDS="42", CHANNEL_ID="-1001", WATERMARK="false")
+        import bot
+        self.b = bot
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        bot.DB_PATH = os.path.join(self.tmp.name, "s.db")
+        bot.init_db()
+        self.sig = bot.build_signal({"pair": "XAUUSD", "direction": "BUY", "entry": "2650", "sl": "2645",
+                                     "tp": ["2660"], "note": "Cassure"})
+        self.sig.update(photo="photo-id", source="capture")
+
+    def test_change_one_field_keeps_the_rest(self):
+        s = self.b.edit_signal(self.sig, "sl", "2643,5")
+        self.assertEqual((s["sl_text"], s["entry_text"], s["photo"], s["source"]), ("2643.5", "2650", "photo-id", "capture"))
+        s = self.b.edit_signal(s, "tp", "2670 2660 2680")
+        self.assertEqual(s["tps_text"], ["2660", "2670", "2680"])
+        self.assertIsNone(self.b.edit_signal(s, "note", "-")["note"])
+        self.assertEqual(self.b.edit_signal(s, "pair", "gold")["pair"], "XAUUSD")
+
+    def test_flip_direction_swaps_stop_and_target(self):
+        s = self.b.edit_signal(self.sig, "dir", "sell")
+        self.assertEqual((s["direction"], s["sl_text"], s["tps_text"]), ("SELL", "2660", ["2645"]))
+
+    def test_inconsistent_value_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.b.edit_signal(self.sig, "sl", "2655")
+
+    def test_flow_from_preview_button(self):
+        b, ctx = self.b, MagicMock()
+        b.ADMIN_IDS = {42}
+        ctx.user_data = {"sig": self.sig}
+        ctx.bot.send_photo = AsyncMock(return_value=MagicMock(message_id=2))
+        ctx.bot.send_message = AsyncMock(return_value=MagicMock(message_id=2))
+
+        def cb(data):
+            u = MagicMock()
+            u.effective_user.id = u.effective_chat.id = 42
+            u.callback_query.data = data
+            u.callback_query.answer = AsyncMock()
+            u.callback_query.edit_message_reply_markup = AsyncMock()
+            u.callback_query.message.reply_text = AsyncMock()
+            u.effective_message.reply_text = AsyncMock()
+            return u
+        self.assertEqual(asyncio.run(b.sig_confirm(cb("ok:edit"), ctx)), b.CONFIRM)
+        self.assertEqual(asyncio.run(b.sig_edit_field(cb("edit:entry"), ctx)), b.EDIT_VALUE)
+        u = MagicMock()
+        u.effective_user.id = u.effective_chat.id = 42
+        u.callback_query = None
+        u.message.text = "2651"
+        u.message.reply_text = AsyncMock()
+        u.effective_message.reply_text = AsyncMock()
+        self.assertEqual(asyncio.run(b.sig_edit_value(u, ctx)), b.CONFIRM)
+        self.assertEqual(ctx.user_data["sig"]["entry_text"], "2651")
+        self.assertTrue(ctx.bot.send_photo.called or ctx.bot.send_message.called)   # nouvel aperçu
 
 
 if __name__ == "__main__":
